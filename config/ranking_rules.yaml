@@ -1,0 +1,77 @@
+# Leaderboard composition and the sector x stock opportunity matrix.
+# All rank components are transparent rank/percentile transforms of computed metrics.
+# NO invented probabilities. Weights are organizational defaults.
+
+leaderboards:
+  strongest_sectors:
+    components:
+      - {metric: excess_1w, weight: 0.2}
+      - {metric: excess_1m, weight: 0.3}
+      - {metric: excess_3m, weight: 0.5}
+    direction: higher
+  emerging_sectors:
+    components:
+      - {metric: rs_rank_change_21s, weight: 0.4}
+      - {metric: rs_rank_change_5s, weight: 0.2}
+      - {metric: ret_1m_excess, weight: 0.4}
+    direction: higher
+  resuming_sectors:
+    components:
+      - {metric: setup_recency_score, weight: 0.5}    # 1 if active setup B/C, decaying with age
+      - {metric: ret_1w_excess, weight: 0.3}
+      - {metric: rs_rank_change_5s, weight: 0.2}
+    direction: higher
+  early_stage2_stocks:
+    components:
+      - {metric: setup_recency_score, weight: 0.35}
+      - {metric: rs_vs_sector_1m, weight: 0.25}
+      - {metric: volume_ratio, weight: 0.15}
+      - {metric: ret_1w, weight: 0.25}
+    direction: higher
+  continuation_stocks:
+    components:
+      - {metric: setup_recency_score, weight: 0.35}
+      - {metric: rs_vs_sector_1m, weight: 0.25}
+      - {metric: volume_ratio, weight: 0.15}
+      - {metric: ret_1w, weight: 0.25}
+    direction: higher
+  reversal_watchlist:
+    components:
+      - {metric: rs_improvement_score, weight: 0.5}
+      - {metric: base_tightness, weight: 0.5}
+    direction: higher
+
+opportunity_matrix:
+  # sector_condition -> stock setup -> priority
+  EMERGING_ROTATION:
+    FRESH_STAGE2_BREAKOUT: HIGHEST
+    STAGE2_PAUSE_BREAKOUT: HIGH
+    STAGE2_PULLBACK_RESUMPTION: HIGH
+    MAJOR_REVERSAL_WATCH: WATCHLIST
+  STRONG_LEADERSHIP:
+    FRESH_STAGE2_BREAKOUT: HIGH
+    STAGE2_PAUSE_BREAKOUT: HIGH
+    STAGE2_PULLBACK_RESUMPTION: HIGH
+    MAJOR_REVERSAL_WATCH: WATCHLIST
+  ACCELERATING_LEADERSHIP:
+    FRESH_STAGE2_BREAKOUT: HIGHEST
+    STAGE2_PAUSE_BREAKOUT: HIGHEST
+    STAGE2_PULLBACK_RESUMPTION: HIGHEST
+    MAJOR_REVERSAL_WATCH: WATCHLIST
+  RESUMING_LEADERSHIP:
+    FRESH_STAGE2_BREAKOUT: HIGH
+    STAGE2_PAUSE_BREAKOUT: HIGHEST
+    STAGE2_PULLBACK_RESUMPTION: HIGHEST
+    MAJOR_REVERSAL_WATCH: WATCHLIST
+  WEAKENING_LEADERSHIP:
+    FRESH_STAGE2_BREAKOUT: SECONDARY
+    STAGE2_PAUSE_BREAKOUT: SECONDARY
+    STAGE2_PULLBACK_RESUMPTION: SECONDARY
+    MAJOR_REVERSAL_WATCH: EXCLUDE
+  WEAK_SECTOR:
+    FRESH_STAGE2_BREAKOUT: SECONDARY
+    STAGE2_PAUSE_BREAKOUT: EXCLUDE
+    STAGE2_PULLBACK_RESUMPTION: EXCLUDE
+    MAJOR_REVERSAL_WATCH: EXCLUDE
+
+priority_order: [HIGHEST, HIGH, SECONDARY, WATCHLIST, EXCLUDE]

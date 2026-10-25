@@ -1,0 +1,30 @@
+# Rule set used by `python -m scanner strategy scan`. Research, not advice.
+# Chosen by `strategy research` on 2015-02..2021-12 (robust in-sample score, current-
+# member universe). Re-tested on the survivorship-free point-in-time universe
+# (NSE bhavcopies incl. delisted stocks, 20 bps/side):
+#   2015-2021: CAGR +17.7%, Sharpe 1.06, max DD -38%, alpha vs Nifty500 EW index +10.3%
+#   2022-2026: CAGR +16.2%, Sharpe 0.89, max DD -30%, alpha vs Nifty500 EW index +6.2%
+#   (Nifty500 Equal Weight index itself: +11.6% / +12.2% CAGR)
+# See reports/STRATEGY_REPORT.md (point-in-time) and
+# reports/STRATEGY_REPORT_CURRENT_UNIVERSE.md (old, survivorship-biased).
+#
+# Scan:      trend template (close > 50-DMA > 200-DMA, 200-DMA rising) and 12-1 momentum
+#            in the top 10% of liquid stocks
+# Rank:      12-1 momentum divided by 6-month volatility (smooth trends first)
+# Buy:       next session's open, only while Nifty 500 is above its 200-DMA;
+#            skip if it opens > 5% above the signal close
+# Sell:      first of: +40% target, next open after a close below the 50-DMA,
+#            or 126 sessions held
+entry: momentum
+score: rs_vol_rank
+regime_filter: true
+max_positions: 20
+cost_bps_per_side: 20.0
+exit:
+  max_hold: 126
+  target_pct: 0.40
+  stop_pct: null
+  stop_atr: null
+  trail_atr: null
+  trail_ma50: true
+  rank_exit: null

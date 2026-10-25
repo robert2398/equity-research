@@ -1,0 +1,35 @@
+# Stan Weinstein-inspired objective four-stage classifier (WEEKLY candles only).
+# All rules use completed weekly bars. The incomplete current week is never used
+# for a confirmed stage.
+
+weekly:
+  min_history_weeks: 60          # need 30wMA + 4w slope + ranges with margin
+  ma_short_weeks: 10
+  ma_long_weeks: 30
+  ma_long_slope_weeks: 4         # slope measured over this many weeks
+
+  # fractional per-week slope thresholds on the 30-week MA
+  slope_flat_max: 0.0015         # |slope/wma30| <= 0.15%/week  => "flat"
+  slope_up_min: 0.0015           # slope/wma30 >= 0.15%/week    => "rising"
+  slope_down_min: -0.0015        # slope/wma30 <= -0.15%/week   => "declining"
+
+  # range structure
+  range_window_weeks: 26
+  basing_window_weeks: 13
+  basing_max_range_width: 0.25   # 13w close-range width below 25% => tight basing
+  high_window_weeks: 52
+  new_high_close_lookback: 10    # weekly close above max of prior 10 weekly closes
+
+  # distance rules (fraction of price)
+  stage2_min_dist_above_ma_long: 0.00    # close >= wma30
+  stage3_max_dist_from_52w_high: 0.30    # topping zone: within 30% of 52w high
+  stage4_min_dist_from_52w_high: 0.25    # deep below 52w high while declining
+
+  # relative-strength contribution (vs benchmark, weekly RS ratio)
+  rs_slope_weeks: 10
+  rs_improving_min: 0.0           # weekly RS-ratio slope > 0
+  rs_deteriorating_max: -0.001
+
+  # state machine
+  confirm_persistence_weeks: 3    # raw stage must persist N consecutive weeks to confirm
+  allow_uncertain: true

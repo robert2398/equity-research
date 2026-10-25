@@ -1,0 +1,83 @@
+# Four independent bullish-opportunity detectors.
+# These are DISCOVERY rules, not automatic orders, and not statistically optimized.
+# Structure detection uses completed WEEKLY candles; triggers use completed DAILY candles.
+
+shared:
+  min_daily_history: 260          # sessions required before detecting anything
+  min_weekly_history: 60
+
+fresh_stage2_breakout:            # SETUP A
+  base_min_weeks: 8
+  base_max_weeks: 26
+  base_max_range_width: 0.25      # weekly-close range width within the base
+  resistance_source: base_max_weekly_close   # computed only from bars BEFORE the breakout bar
+  require_price_vs_ma_long: above_or_equal   # breakout week close >= flattening/rising 30wMA
+  ma_long_slope_min: -0.0015      # "flattening or turning upward"
+  prior_stage_allowed: [STAGE1, UNCERTAIN, STAGE4]   # prior to breakout; NOT an established STAGE2
+  prior_stage2_exclusion_weeks: 13  # if stage has been STAGE2 for >= 13 weeks -> Setup B territory
+  rs_improving: true              # RS-ratio slope > 0 near breakout
+  rs_slope_sessions: 20
+  max_age_weeks: 6                # breakout age at most 6 completed weeks
+  max_extension_from_reference: 0.15   # 15% above breakout reference = excessive
+  volume_confirmation: prefer     # for stocks with volume data (ratio >= 1.2 on trigger)
+
+stage2_pause_breakout:            # SETUP B
+  prior_stage2_min_weeks: 13      # established Stage 2 before the pause
+  pause_min_weeks: 3
+  pause_max_weeks: 12
+  pause_max_range_width: 0.18     # consolidation weekly-close band width
+  range_contraction_ratio: 0.75   # consolidation avg weekly range <= 75% of prior advance avg weekly range
+  resistance_source: pause_max_weekly_close
+  require_ma_long_slope_min: 0.0  # rising (or at least non-falling) 30wMA
+  pause_low_vs_ma_long_min: -0.05 # consolidation low not more than 5% below wma30
+  rs_requirement: stable_or_improving   # 20-session RS slope >= -0.001
+  max_age_weeks: 8
+  max_extension_from_reference: 0.15
+  volume_confirmation: prefer
+
+stage2_pullback_resumption:       # SETUP C
+  prior_stage2_min_weeks: 13
+  pullback_min_weeks: 2
+  pullback_max_weeks: 8
+  min_pullback_depth_pct: 0.05    # at least 5% off the local closing high
+  min_pullback_depth_atr: 1.5     # at least 1.5 weekly ATRs deep (volatility-normalized)
+  max_pullback_depth_pct: 0.45    # deeper than 45% is not a pullback, it is a breakdown
+  retrace_of_advance_min: 0.25    # retraces >= 25% of the preceding advance
+  retrace_of_advance_max: 1.05
+  support_tolerance_ma: 0.03      # pullback low within 3% of 10w/30w MA ...
+  support_breakout_level_tol: 0.03   # ... or within 3% of prior breakout reference
+  higher_low_required: false     # structural higher low adds evidence when present
+  recovery_trigger: reclaim_20dma_or_pivot   # objective daily trigger (see detector)
+  recovery_pivot_sessions: 10     # pivot = highest daily close of prior 10 sessions
+  reclaim_ma: 20                  # daily MA reclaimed
+  rs_stop_deteriorating: true     # RS 5-session slope >= RS slope of prior 5 sessions
+  max_age_sessions: 30
+  max_extension_from_reference: 0.15
+
+major_reversal_watch:             # SETUP D (watchlist, NOT a confirmed entry)
+  decline_min_weeks: 8
+  min_decline_from_high_pct: 0.25 # at least 25% below the reference high
+  stabilization_min_weeks: 3
+  stabilization_max_range_width: 0.15
+  ma_short_slope_flat_max: 0.0015 # 10wMA flattening or turning up
+  require_close_above_ma_short: true
+  ma_long_stabilizing: slope_magnitude_shrinking
+  higher_low_evidence: true       # recent weekly low above prior swing low
+  rs_improving_min_sessions: 5
+  max_age_weeks: 10
+  # promotion: when structure later satisfies fresh_stage2_breakout, it is promoted.
+
+freshness:                        # organizational bands, not proven optimal entry timing
+  new_max_sessions: 5
+  recent_max_sessions: 15
+  extension_threshold: 0.15       # beyond this = EXTENDED
+
+invalidation:
+  breakout_close_below_factor: 0.995   # weekly close back below 99.5% of breakout reference
+  stage4_confirmed: true               # confirmed Stage 4 invalidates every bullish setup
+  pullback_below_ma_long_factor: 0.97  # weekly close 3%+ below 30wMA kills resumption setups
+  max_extension_hard: 0.30             # beyond this the setup is not detected at all
+
+conflict_resolution:
+  # one primary actionable setup per security per session (deterministic)
+  priority: [STAGE2_PAUSE_BREAKOUT, STAGE2_PULLBACK_RESUMPTION, FRESH_STAGE2_BREAKOUT, MAJOR_REVERSAL_WATCH]

@@ -1,0 +1,57 @@
+# NSE sectoral index universe.
+# kite_symbol must match the Kite instruments() name under segment INDICES (verified at runtime;
+# sectors whose symbol is not found are reported as missing, never fabricated).
+# csv_slugs are candidate official NSE constituent-list CSVs on archives.nseindia.com,
+# tried in order. If all fail, the constituent list can be imported manually
+# (see README - "Manual constituent import").
+
+benchmarks:
+  - { name: NIFTY 500, csv_slugs: [ind_nifty500list] }
+  - { name: NIFTY 50,  csv_slugs: [ind_nifty50list] }
+
+sectors:
+  - name: NIFTY AUTO
+    csv_slugs: [ind_niftyautolist]
+  - name: NIFTY BANK
+    csv_slugs: [ind_niftybanklist]
+  - name: NIFTY IT
+    csv_slugs: [ind_niftyitlist]
+  - name: NIFTY PHARMA
+    csv_slugs: [ind_niftypharmalist]
+  - name: NIFTY HEALTHCARE
+    csv_slugs: [ind_niftyhealthcarelist]
+  - name: NIFTY FMCG
+    csv_slugs: [ind_niftyfmcglist]
+  - name: NIFTY METAL
+    csv_slugs: [ind_niftymetallist]
+  - name: NIFTY REALTY
+    csv_slugs: [ind_niftyrealtylist]
+  - name: NIFTY FINANCIAL SERVICES
+    kite_symbol: NIFTY FIN SERVICE
+    csv_slugs: [ind_niftyfinancelist]
+  - name: NIFTY PSU BANK
+    csv_slugs: [ind_niftypsubanklist]
+  - name: NIFTY PRIVATE BANK
+    kite_symbol: NIFTY PVT BANK
+    csv_slugs: [ind_niftyprivatebanklist]
+  - name: NIFTY CONSUMER DURABLES
+    kite_symbol: NIFTY CONSR DURBL
+    csv_slugs: [ind_niftyconsumerdurableslist]
+  - name: NIFTY MEDIA
+    csv_slugs: [ind_niftymedialist]
+  - name: NIFTY ENERGY
+    csv_slugs: [ind_niftyenergylist]
+  - name: NIFTY OIL & GAS
+    kite_symbol: NIFTY OIL AND GAS
+    csv_slugs: [ind_niftyoilgaslist]
+  - name: NIFTY INFRASTRUCTURE
+    kite_symbol: NIFTY INFRA
+    csv_slugs: [ind_niftyinfralist, ind_niftyinfrastructurelist]
+  - name: NIFTY CAPITAL GOODS
+    csv_slugs: [ind_niftycapitalgoodslist, ind_niftycapitalgoodlist]
+  - name: NIFTY PSE
+    csv_slugs: [ind_niftypselist]
+  - name: NIFTY POWER
+    csv_slugs: [ind_niftypowerlist]
+  - name: NIFTY CHEMICALS
+    csv_slugs: [ind_niftychemicalslist]

@@ -1,0 +1,21 @@
+# secrets / session
+.env
+.kite_session.json
+session.json
+*.token
+
+# data & generated artifacts
+data/
+reports/
+*.duckdb
+*.duckdb.wal
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.pytest_tmp/
+build/
+dist/
+*.egg-info/

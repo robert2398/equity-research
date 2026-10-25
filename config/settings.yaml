@@ -1,0 +1,55 @@
+# General application settings. Thresholds are initial heuristics, NOT optimized rules.
+
+app:
+  timezone: Asia/Kolkata
+  data_dir: ./data
+
+history:
+  years: 3                    # ~3 years of daily candles
+  benchmark_symbols:          # Kite index instrument names
+    broad: NIFTY 500
+    headline: NIFTY 50
+
+universe:
+  min_stock_price: 50.0          # INR, latest close
+  min_avg_daily_turnover_inr: 20000000.0  # 2 cr INR, 20-day mean of close*volume
+  sector_top_n: 5                # sectors shown in leaderboards by default
+  stocks_per_sector: 10
+
+liquidity:
+  avg_turnover_window: 20        # sessions for mean traded value
+  relative_volume_window: 20     # sessions for volume ratio
+
+returns:
+  weekly_sessions: 5
+  monthly_sessions: 21
+  quarterly_sessions: 63
+
+freshness:
+  new_max_sessions: 5
+  recent_max_sessions: 15
+
+scan:
+  enable_provisional_week: true  # display current incomplete week provisionally (never for confirmed stages)
+
+snapshot_dir: snapshots          # under data_dir
+
+backtest:                        # scoring of replayed signals (scanner/backtest/evaluate.py)
+  actionable_freshness: [NEW, RECENT]   # FAILED / EXTENDED / ACTIVE at first appearance are not entries
+  cost_bps_per_side: 20.0        # STT + stamp + exchange + GST + slippage, delivery trades
+  max_positions: 10              # equal slots in the portfolio simulation
+  hold_sessions: [21, 63]        # fixed holds simulated (sell at close after N sessions)
+  setup_priority: [STAGE2_PAUSE_BREAKOUT, STAGE2_PULLBACK_RESUMPTION, FRESH_STAGE2_BREAKOUT, MAJOR_REVERSAL_WATCH]
+  momentum:                      # 12-1 momentum gate: setups used only as entry timing in leaders
+    lookback: 252                # sessions back for the start of the momentum window
+    skip: 21                     # skip the most recent month (short-term reversal)
+    min_rank: 0.8                # percentile among liquid stocks -> top 20%
+    rebalance_sessions: 21       # control portfolio (all leaders) rebalance interval
+
+# Point-in-time indices downloaded with the regular sync and used as fair yardsticks
+# in strategy research (the stock universe itself carries survivorship bias).
+strategy_benchmarks:
+  - NIFTY500 EQUAL WEIGHT     # same breadth as the EW universe, without survivorship
+  - NIFTY500MOMENTM50         # NSE's own 12m/6m momentum index (rebalanced semi-annually)
+  - NIFTY200MOMENTM30
+  - NIFTY MIDCAP 150
