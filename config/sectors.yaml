@@ -8,6 +8,7 @@
 benchmarks:
   - { name: NIFTY 500, csv_slugs: [ind_nifty500list] }
   - { name: NIFTY 50,  csv_slugs: [ind_nifty50list] }
+  - { name: NIFTY MICROCAP250, csv_slugs: [ind_niftymicrocap250_list] }
 
 sectors:
   - name: NIFTY AUTO

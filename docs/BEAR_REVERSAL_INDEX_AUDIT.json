@@ -1,0 +1,161 @@
+{
+  "prepared_on": "2026-10-26",
+  "scope": "Read-only cached index drawdown calculations for phase selection; no strategy backtest.",
+  "source": "Existing repository Kite index candles; NSE archive reconciliation pending.",
+  "formula": "close / cumulative_max(close) - 1 within each specified audit window; closing prices, not intraday extrema or total returns.",
+  "master_sha256": "3e7de7e3d3dccf2aaa8873360e75f58a6fedcb98d3a742aeff3f83eaf85b4da8",
+  "indices": [
+    {
+      "index": "NIFTY 50",
+      "source_path": "data/raw/idx_daily/256265.parquet",
+      "sha256": "82a4464bd57c761971be742fe0c5e90f79a1ac1a95f09126b1cc6502c0f52fc3",
+      "coverage_start": "2014-01-01",
+      "coverage_end": "2026-10-16",
+      "windows": [
+        {
+          "phase": "IN2015",
+          "window_start": "2015-01-01",
+          "window_end": "2016-03-31",
+          "peak_date": "2015-03-03",
+          "trough_date": "2016-02-25",
+          "peak_close": 8996.2,
+          "trough_close": 6970.6,
+          "drawdown_pct": -22.5162
+        },
+        {
+          "phase": "IN2018",
+          "window_start": "2018-01-01",
+          "window_end": "2019-12-31",
+          "peak_date": "2018-08-28",
+          "trough_date": "2018-10-26",
+          "peak_close": 11738.5,
+          "trough_close": 10030.0,
+          "drawdown_pct": -14.5547
+        },
+        {
+          "phase": "IN2020",
+          "window_start": "2020-01-01",
+          "window_end": "2020-04-30",
+          "peak_date": "2020-01-14",
+          "trough_date": "2020-03-23",
+          "peak_close": 12362.3,
+          "trough_close": 7610.25,
+          "drawdown_pct": -38.4399
+        },
+        {
+          "phase": "IN2022",
+          "window_start": "2021-10-01",
+          "window_end": "2022-07-31",
+          "peak_date": "2021-10-18",
+          "trough_date": "2022-06-17",
+          "peak_close": 18477.05,
+          "trough_close": 15293.5,
+          "drawdown_pct": -17.2298
+        }
+      ]
+    },
+    {
+      "index": "NIFTY MIDCAP 150",
+      "source_path": "data/raw/idx_daily/266249.parquet",
+      "sha256": "907d856096224e6a4a4f51ad0ba46c0609ac04722934a39e2b863385e3956b2c",
+      "coverage_start": "2014-01-01",
+      "coverage_end": "2026-10-16",
+      "windows": [
+        {
+          "phase": "IN2015",
+          "window_start": "2015-01-01",
+          "window_end": "2016-03-31",
+          "peak_date": "2015-08-06",
+          "trough_date": "2016-02-26",
+          "peak_close": 4640.07,
+          "trough_close": 3764.55,
+          "drawdown_pct": -18.8687
+        },
+        {
+          "phase": "IN2018",
+          "window_start": "2018-01-01",
+          "window_end": "2019-12-31",
+          "peak_date": "2018-01-08",
+          "trough_date": "2019-08-22",
+          "peak_close": 7469.15,
+          "trough_close": 5558.95,
+          "drawdown_pct": -25.5745
+        },
+        {
+          "phase": "IN2020",
+          "window_start": "2020-01-01",
+          "window_end": "2020-04-30",
+          "peak_date": "2020-02-07",
+          "trough_date": "2020-03-23",
+          "peak_close": 6792.2,
+          "trough_close": 4165.89,
+          "drawdown_pct": -38.6666
+        },
+        {
+          "phase": "IN2022",
+          "window_start": "2021-10-01",
+          "window_end": "2022-07-31",
+          "peak_date": "2021-10-18",
+          "trough_date": "2022-06-20",
+          "peak_close": 12218.85,
+          "trough_close": 9580.35,
+          "drawdown_pct": -21.5937
+        }
+      ]
+    },
+    {
+      "index": "NIFTY 500",
+      "source_path": "data/raw/idx_daily/268041.parquet",
+      "sha256": "55a16f23bb66dd05576e558846b28a5b59892d1e1239a0e4b388eea0a5e98c50",
+      "coverage_start": "2014-01-01",
+      "coverage_end": "2026-10-16",
+      "windows": [
+        {
+          "phase": "IN2015",
+          "window_start": "2015-01-01",
+          "window_end": "2016-03-31",
+          "peak_date": "2015-03-03",
+          "trough_date": "2016-02-25",
+          "peak_close": 7345.55,
+          "trough_close": 5816.5,
+          "drawdown_pct": -20.816
+        },
+        {
+          "phase": "IN2018",
+          "window_start": "2018-01-01",
+          "window_end": "2019-12-31",
+          "peak_date": "2018-08-31",
+          "trough_date": "2018-10-26",
+          "peak_close": 9992.0,
+          "trough_close": 8417.25,
+          "drawdown_pct": -15.7601
+        },
+        {
+          "phase": "IN2020",
+          "window_start": "2020-01-01",
+          "window_end": "2020-04-30",
+          "peak_date": "2020-01-17",
+          "trough_date": "2020-03-23",
+          "peak_close": 10118.7,
+          "trough_close": 6243.0,
+          "drawdown_pct": -38.3024
+        },
+        {
+          "phase": "IN2022",
+          "window_start": "2021-10-01",
+          "window_end": "2022-07-31",
+          "peak_date": "2021-10-18",
+          "trough_date": "2022-06-20",
+          "peak_close": 15886.15,
+          "trough_close": 12950.75,
+          "drawdown_pct": -18.4777
+        }
+      ]
+    }
+  ],
+  "missing_cached_indices": [
+    "NIFTY SMLCAP 100",
+    "NIFTY SMLCAP 250"
+  ],
+  "unavailable_phase": "IN2011 requires older index and equity backfill."
+}

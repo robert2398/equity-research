@@ -1,0 +1,130 @@
+# Frozen daily-scan parameters for the bear-market early-leadership scanner.
+# Source of truth: docs/BEAR_REVERSAL_IMPLEMENTATION_PLAN.md sections 4-5 (M0 freeze).
+# These are preregistered starting hypotheses, NOT optimized parameters.
+
+run:
+  benchmarks:
+    broad: NIFTY 500          # primary RS benchmark + stress reference
+    headline: NIFTY 50        # displayed for context
+    midcap: NIFTY MIDCAP 150  # stress condition (b) + RS comparison
+    smallcap: NIFTY SMLCAP 250  # RS comparison (candles via fetch_extras.py)
+    microcap: NIFTY MICROCAP250  # RS comparison + microcap segment context
+  chart_sessions: 63          # breadth chart lookback (~3 months context)
+  focus_sessions: 21          # ~1 month focus window for the summary
+  staleness_warn_days: 4      # warn when data older than this many calendar days
+
+replay:                       # historical weekly mechanics replay (verification)
+  from: 2016-01-01            # candle backfill start (warmup before 2018)
+  windows:
+    - {name: "2018-2020 bear + COVID", start: 2018-01-01, end: 2020-12-31}
+    - {name: "2021-2022 correction", start: 2021-10-01, end: 2022-12-31}
+  run_day: Saturday           # weekly run assumption; uses last completed session <= that day
+  fwd_horizons: {1w: 5, 1m: 21, 3m: 63}
+
+market_state:                  # plan section 4
+  stress_broad_dd: -0.10       # N500 >= 10% below trailing 252-session high
+  stress_broad_ma200_flat: 20  # MA200 no higher than its value N sessions ago
+  stress_midcap_dd: -0.15      # Midcap150 >= 15% below trailing high
+  stress_breadth50_max: 0.35   # ... and breadth50 below 35%
+  recent_stress_sessions: 126
+  confirmed_sessions: 5        # N sessions above MA50 with breadth50 > 50%
+  confirmed_breadth50_min: 0.50
+  confirmed_ma50_lookback: 20
+
+breadth_improvement:           # >= 3 of 4 conditions on each of 3 consecutive sessions
+  persistence_sessions: 3
+  ma20_gain_5s_pp: 5.0         # %above MA20 up >= 5pp over 5 sessions
+  ma50_gain_20s_pp: 5.0        # %above MA50 up >= 5pp over 20 sessions
+  newlows_window: 5            # mean daily new-52w-low % last 5 vs preceding 5
+  ema_fast: 5
+  ema_slow: 20
+
+eligibility:                   # plan section 5 (trade candidacy)
+  min_history_sessions: 252
+  traded_fraction_min: 0.90    # of last 126 sessions
+  traded_value_window: 60
+  traded_value_min_inr: 20000000.0   # median official traded value >= Rs 2 crore
+  # Rs 500 crore full-market-cap gate: full dated shares-outstanding history is
+  # NOT yet built (plan M1). Current gate = existing Nifty500+sector universe
+  # membership as a proxy; every report discloses this deviation explicitly.
+  market_cap_note: "cap gate proxied by universe membership; UNKNOWN_CAP history pending (plan M1)"
+
+relative_strength:
+  slope_sessions: 20           # positive log-linear slope required
+  near_high_window: 60         # RS within 2% of its 60-session high
+  near_high_tol: 0.02
+  excess_window: 60
+  excess_rank_pct_min: 0.80    # top 20% of eligible stocks by 60-session excess
+
+setup_h:                       # higher low during a market retest
+  swing_side_sessions: 2       # low confirmed with 2 sessions each side
+  pair_min_gap: 10
+  pair_max_gap: 60
+  higher_low_atr: 0.5          # low[u2] >= low[u1] + 0.5 * ATR14[u2]
+  bench_window: 5              # benchmark minima compared over 5-session windows
+  bench_retest_tol: 1.01       # second bench minimum <= 101% of first
+  max_confirm_age: 40          # u2 confirmation no older than 40 sessions
+
+setup_r:                       # resilient stock near its highs
+  near_high_frac: 0.80         # within 20% of trailing 252-session high
+  require_recent_stress: true
+
+entry:                         # shared entry requirements at close t
+  ma: 50
+  price_return_sessions: 20    # positive 20-session price return
+  base_sessions: 10
+  base_max_width: 0.12         # (max high - min low) / close[t-1] <= 12%
+  atr_sessions: 14
+  contraction_fast: 5          # TR5 mean < TR20 mean, breakout bar excluded
+  contraction_slow: 20
+  max_extension_atr: 1.0       # close no more than 1 ATR14 above pivot
+  volume_ratio_min: 1.5        # breakout volume >= 1.5x mean of prior 20
+  watch_near_pivot_atr: 1.0    # watch: within 1 ATR below pivot (pre-breakout)
+  stale_formation_sessions: 20 # untriggered formation expires
+  extended_atr: 4.0            # ran > 4 ATR above pivot -> EXTENDED
+  cooldown_sessions: 10        # after FAILED/EXPIRED resolution
+  fresh_trigger_sessions: 2    # trigger still 'actionable' for this many sessions
+
+score:                         # 0-100, actionable threshold 80
+  actionable_threshold: 80
+  w_leadership: 30
+  w_base: 25
+  w_volume: 15
+  w_entry_risk: 15
+  w_sector: 15
+  base_width_ref: 0.08
+  contraction_ref: 0.5
+  extension_ref_atr: 2.0
+  stop_dist_ref: 0.08
+  stop_dist_base: 0.12
+
+shortlist:                     # plan section 5 selective output
+  max_actionable: 5
+  max_watch: 5
+  max_per_sector: 2
+  corr_window: 60
+  corr_max: 0.85
+  corr_min_obs: 50
+  sector_min_names: 10         # fewer -> no sector score component (coverage note)
+
+ai_notes:                      # ON-DEMAND LLM research notes (ai_notes.py): only when the user
+                               # clicks Research on a Next Bull row; the daily run never calls it
+  enabled: true                # needs OPENROUTER_API_KEY in .env
+  model: openai/gpt-6.1-sol-pro
+  web_search: true             # OpenRouter web plugin: current news/filings
+  web_engine: exa              # exa: 5 fixed results fed in (bounded prompt, ~$0.02 search)
+                               # native: model searches itself — found primary filings but the
+                               # 2026-10-31 INDORAMA test pulled 357k prompt tokens = $0.72/click
+  search_context_size: low     # native engine only
+  web_max_results: 5
+  reasoning_effort: low
+  max_tokens: 4000
+  cache_days: 7                # a repeat click within 7 days returns the cached note (free)
+  cost_hint: "~$0.03"          # quick click (PREMIERPOL test 2026-10-31: $0.034, 14k tokens)
+  deep:                        # "Deep" button: overrides the settings above for that click
+    web_engine: native         # model runs its own searches — finds filings / ASM lists
+    search_context_size: low
+    reasoning_effort: medium
+    max_tokens: 6000
+    cost_hint: "~$0.70"        # INDORAMA test 2026-10-31: $0.72, 357k prompt tokens
+  timeout_s: 180
