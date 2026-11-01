@@ -9,6 +9,8 @@ Serves:
                              MAs + RS vs benchmarks (full-market panel; Kite store fallback; from the
                              shared parquet store, read-only)
   /api/sector/<NAME>     -> sector index close series
+  /api/sector-stocks/<NAME> -> the sector's stocks with returns, excess, in-sector RS rank,
+                             stage and setup (latest scanner snapshot)
   POST /api/ai-note/<SYM>[?deep=1] -> on-demand AI research note for a Next Bull name (ai_notes.py;
                              the only routes that spend LLM tokens, one call per click)
   POST /api/ai-brief      -> on-demand AI market/regime brief
@@ -34,8 +36,9 @@ import numpy as np
 import pandas as pd
 
 HERE = Path(__file__).resolve().parent
-if str(HERE) not in sys.path:
-    sys.path.insert(0, str(HERE))
+for _p in (str(HERE), str(HERE.parent)):           # bear_reversal/ and repo root (scanner)
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 DIST = HERE.parent / "frontend" / "dist"
 UI_DATA = HERE / "ui_data"
@@ -108,6 +111,78 @@ def _kite_candles(symbol: str) -> pd.DataFrame | None:
     if row is None or not len(row):
         return None
     return dao.store.read_candles("stock", int(row["token"].iloc[0]))
+
+
+def _stock_metrics() -> tuple[pd.DataFrame | None, str | None]:
+    """Per-stock metrics from the latest main-scanner snapshot (cached per snapshot)."""
+    from scanner.data.store import latest_snapshot
+    snap = latest_snapshot()
+    if not snap or not (snap / "stock_metrics.parquet").exists():
+        return None, None
+    if _cache.get("sm_snap") != str(snap):
+        _cache["sm"] = pd.read_parquet(snap / "stock_metrics.parquet")
+        _cache["sm_snap"] = str(snap)
+    return _cache["sm"], snap.name
+
+
+def _industry_members(industry: str) -> list[str]:
+    """Nifty 500 constituents tagged with an NSE industry (from the constituents CSV)."""
+    from scanner.config import get_settings
+    p = get_settings().raw_dir / "constituents" / "nifty_500.parquet"
+    if not p.exists():
+        return []
+    d = pd.read_parquet(p, columns=["symbol", "industry"])
+    return sorted(d.loc[d["industry"].str.lower() == industry.lower(), "symbol"])
+
+
+def sector_stocks(name: str) -> dict | None:
+    """Every stock of a sector with the rotation-table columns: returns, excess vs Nifty 500,
+    rank inside the sector by 1M excess (1 = strongest, as for sectors) and its 5/21-session
+    change, RS vs the sector, stage, setup, liquidity."""
+    sm, as_of = _stock_metrics()
+    if sm is None:
+        return None
+    dao = _dao()
+    allm = dao.sector_members()
+    members = allm.get(name) or []
+    basis = "official index constituents"
+    if not members and name == "NIFTY PRIVATE BANK":
+        members = sorted(set(allm.get("NIFTY BANK", [])) - set(allm.get("NIFTY PSU BANK", [])))
+        basis = "Nifty Bank minus Nifty PSU Bank members (NSE publishes no list for this index)"
+    if not members and name == "NIFTY CHEMICALS":
+        members, basis = _industry_members("Chemicals"),             "Nifty 500 stocks in NSE's 'Chemicals' industry (no list published for this index)"
+    if not members:
+        members = sm.loc[sm["sector"] == name, "symbol"].tolist()
+        basis = "stocks whose primary sector is this one (no constituent list)"
+    rows = sm[sm["symbol"].isin(members)].copy()
+    if not len(rows):
+        return {"sector": name, "basis": basis, "as_of": as_of, "stocks": [],
+                "missing": sorted(members)}
+    bench = _bench_series().get("n500")
+    past = {5: {}, 21: {}}
+    for sym, tok in zip(rows["symbol"], rows["token"]):
+        df = dao.store.read_candles("stock", int(tok))
+        if df is None or bench is None or len(df) < 50:
+            continue
+        a = pd.concat([df.set_index("date")["close"].rename("s"), bench.rename("b")],
+                      axis=1, join="inner").dropna()
+        for lag in (5, 21):
+            if len(a) > lag + 22:
+                x = a.iloc[: len(a) - lag]
+                past[lag][sym] = (x["s"].iloc[-1] / x["s"].iloc[-22] - 1) -                     (x["b"].iloc[-1] / x["b"].iloc[-22] - 1)
+    rows["rank"] = rows["excess_1m"].rank(ascending=False, method="min")
+    for lag in (5, 21):
+        prev = rows["symbol"].map(past[lag]).rank(ascending=False, method="min")
+        rows[f"rank_change_{lag}s"] = prev - rows["rank"]          # positive = moved up
+    rows = rows.sort_values("rank")
+    keep = ["symbol", "last_close", "ret_1w", "ret_1m", "ret_3m", "excess_1m", "excess_3m",
+            "rank", "rank_change_5s", "rank_change_21s", "rs_vs_sector_1m", "stage",
+            "weeks_in_stage", "setup_type", "freshness", "avg_turnover_20d", "liquidity_ok",
+            "sector"]
+    out = rows[[c for c in keep if c in rows.columns]]
+    recs = json.loads(out.to_json(orient="records"))
+    return {"sector": name, "basis": basis, "as_of": as_of, "n": len(recs), "stocks": recs,
+            "missing": sorted(set(members) - set(rows["symbol"]))}
 
 
 WEEKLY = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
@@ -347,6 +422,12 @@ class Handler(BaseHTTPRequestHandler):
             asof = qs.get("asof", [None])[0]
             payload = stock_payload(m.group(1), asof=asof, tf=qs.get("tf", ["D"])[0])
             self._json(payload if payload else {"error": "unknown symbol"}, 200 if payload else 404)
+            return
+        m = re.match(r"^/api/sector-stocks/(.+)$", path)
+        if m:
+            payload = sector_stocks(m.group(1))
+            self._json(payload if payload else {"error": "no scanner snapshot"},
+                       200 if payload else 404)
             return
         m = re.match(r"^/api/sector/(.+)$", path)
         if m:

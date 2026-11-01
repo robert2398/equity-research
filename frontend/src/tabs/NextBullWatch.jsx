@@ -3,8 +3,9 @@ import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
 } from 'recharts';
 import {
-  fetchNextBullWatch, fetchDossier, requestAiNote, requestAiBrief, fmtPct, fmtNum,
+  fetchNextBullWatch, fetchDossier, fetchLedger, requestAiNote, requestAiBrief, fmtPct, fmtNum,
 } from '../api.js';
+import { DecideModal, STATUS_PILL } from '../components/LedgerDecide.jsx';
 
 const PHASE_CLASS = {
   'EARLY BULL': 'IMPROVING', WASHOUT: 'WEAK_OR_MIXED', 'BROAD BULL': 'CONFIRMED', NEUTRAL: 'UNKNOWN',
@@ -416,7 +417,19 @@ export function DossierModal({ symbol, onClose, onOpenChart }) {
   );
 }
 
-function StockTable({ rows, onOpen, isSignal, aiMeta, notes, busy, onAi, onDossier }) {
+/** Ledger status of a buy signal; click to record a decision in the Signal Ledger. */
+function LedgerButton({ entry, onClick }) {
+  if (!entry) return null;
+  if (entry.status === 'NEW') {
+    return <button type="button" className="btn xs" onClick={onClick}
+      title="record your decision on this signal in the Signal Ledger">+ Ledger</button>;
+  }
+  return <button type="button" className={`btn xs pill ${STATUS_PILL[entry.shown_status] || 'grey'}`}
+    style={{ border: 'none' }} onClick={onClick} title="in the Signal Ledger — click to update">
+    {entry.status.toLowerCase()}</button>;
+}
+
+function StockTable({ rows, onOpen, isSignal, aiMeta, notes, busy, onAi, onDossier, ledgerOf, onLedger }) {
   return (
     <div className="panel" style={{ overflowX: 'auto', marginTop: 8 }}>
       <table>
@@ -449,6 +462,9 @@ function StockTable({ rows, onOpen, isSignal, aiMeta, notes, busy, onAi, onDossi
               <td><b>{fmtNum(r.score, 0)}</b></td>
               <td onClick={(e) => e.stopPropagation()}>
                 <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                  {isSignal && ledgerOf && (
+                    <LedgerButton entry={ledgerOf(r.symbol)} onClick={() => onLedger(ledgerOf(r.symbol))} />
+                  )}
                   <button type="button" className="btn xs" onClick={() => onDossier(r.symbol)}
                     title="everything behind the signal + research checklist (no AI, free)">Dossier</button>
                   {aiMeta && (
@@ -500,6 +516,15 @@ export default function NextBullWatch({ onOpen }) {
   const [busy, setBusy] = useState({});
   const [modal, setModal] = useState(null);           // { row, isSignal }
   const [dossier, setDossier] = useState(null);       // symbol
+  const [ledger, setLedger] = useState(null);         // signal_ledger view
+  const [decide, setDecide] = useState(null);         // ledger row being decided
+  useEffect(() => { fetchLedger().then((v) => setLedger(v && !v.error ? v : null)); }, []);
+  // a signal's ledger episode: the one on today's list, else the newest live one
+  const ledgerOf = (symbol) => {
+    const rows = (ledger?.rows || []).filter((x) => x.symbol === symbol);
+    return rows.find((x) => x.on_list_today)
+      || rows.filter((x) => x.live).sort((a, b) => b.first_date.localeCompare(a.first_date))[0] || null;
+  };
 
   useEffect(() => {
     fetchNextBullWatch().then((d) => {
@@ -525,7 +550,8 @@ export default function NextBullWatch({ onOpen }) {
   const hist = r.history.dates.map((d, i) => ({ date: d, breadth: r.history.breadth200[i] * 100 }));
   const fresh = data.signals.filter((s) => s.days_on <= FRESH_DAYS).length;
   const tableProps = { onOpen, aiMeta: data.ai_meta, notes, busy,
-    onAi: (row, isSignal) => setModal({ row, isSignal }), onDossier: setDossier };
+    onAi: (row, isSignal) => setModal({ row, isSignal }), onDossier: setDossier,
+    ledgerOf: ledger ? ledgerOf : null, onLedger: setDecide };
 
   return (
     <div>
@@ -575,7 +601,8 @@ export default function NextBullWatch({ onOpen }) {
 
       <h2 style={{ marginTop: 18 }}>Buy signals <span className="pill green">BAGGER SIGNAL</span></h2>
       <div className="small">{data.criteria.signal} · tier A = {data.criteria.tier_a}
-        {data.criteria.small && <> · S = {data.criteria.small}</>} · click a row
+        {data.criteria.small && <> · S = {data.criteria.small}</>} · + Ledger = record your decision
+        (researching / wait / bought / passed) in the Signal Ledger · click a row
         for the chart · Dossier = facts + research checklist (free) · AI = web research (paid)</div>
       <StockTable rows={data.signals} isSignal {...tableProps} />
 
@@ -603,6 +630,10 @@ export default function NextBullWatch({ onOpen }) {
       {dossier && (
         <DossierModal symbol={dossier} onClose={() => setDossier(null)}
           onOpenChart={(s) => { setDossier(null); onOpen(s); }} />
+      )}
+      {decide && ledger && (
+        <DecideModal row={decide} asOf={ledger.as_of} onClose={() => setDecide(null)}
+          onSaved={(v) => { setLedger(v); setDecide(null); }} />
       )}
     </div>
   );

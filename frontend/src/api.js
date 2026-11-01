@@ -38,6 +38,13 @@ export async function fetchSector(name) {
   return r.json();
 }
 
+/** A sector's stocks with the rotation-table columns (latest scanner snapshot). */
+export async function fetchSectorStocks(name) {
+  const r = await fetch(`/api/sector-stocks/${encodeURIComponent(name)}`);
+  const j = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+  return r.ok ? j : { error: j.error || `HTTP ${r.status}` };
+}
+
 export async function fetchNextBullWatch() {
   const r = await fetch('/api/next-bull-watch');
   if (!r.ok) return null;

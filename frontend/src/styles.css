@@ -139,3 +139,10 @@ table.plain tr:hover td { background: none; cursor: default; }
 .slot-input { width: 56px; padding: 1px 6px; font-size: 11.5px; }
 .note-input { width: 100%; box-sizing: border-box; resize: vertical; font-size: 13px; }
 .note-cell { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* sector drill-down */
+tr.selected td { background: #1a2232; }
+tr.sub-row:hover td { background: none; cursor: default; }
+table.nested { width: 100%; background: var(--panel2); border-radius: 8px; }
+table.nested th { font-size: 11px; }
+table.nested tr:hover td { background: #222b3a; cursor: pointer; }
