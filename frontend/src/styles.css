@@ -120,3 +120,22 @@ tr:hover td { background: var(--panel2); cursor: pointer; }
 .step .d { color: var(--muted); font-size: 12px; margin-top: 5px; line-height: 1.45; }
 .step.buy { border-color: #2c5a3e; }
 .step.buy .n { background: var(--green); color: #fff; }
+
+/* dossier */
+.modal.wide { width: min(900px, 100%); }
+table.plain td { text-align: left; white-space: normal; vertical-align: top; padding: 5px 8px; }
+table.plain tr:hover td { background: none; cursor: default; }
+.check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; line-height: 1.45;
+  padding: 3px 0; cursor: pointer; }
+.check input { margin-top: 3px; accent-color: var(--accent); }
+.prompt-box { background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; font-size: 12.5px; line-height: 1.5; color: var(--text); white-space: pre-wrap; }
+
+/* signal ledger */
+.form-row { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; }
+.form-row label { display: flex; gap: 6px; align-items: center; color: var(--muted); }
+.form-row input, .slot-input, .note-input { background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font: inherit; }
+.slot-input { width: 56px; padding: 1px 6px; font-size: 11.5px; }
+.note-input { width: 100%; box-sizing: border-box; resize: vertical; font-size: 13px; }
+.note-cell { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

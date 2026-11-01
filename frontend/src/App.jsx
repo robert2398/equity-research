@@ -11,10 +11,11 @@ import RotationBacktest from './tabs/RotationBacktest.jsx';
 import MoversBacktest from './tabs/MoversBacktest.jsx';
 import BigMovers from './tabs/BigMovers.jsx';
 import NextBullWatch from './tabs/NextBullWatch.jsx';
+import SignalLedger from './tabs/SignalLedger.jsx';
 
 const SECTIONS = [
   ['Live', [
-    ['overview', 'Overview'], ['nbull', 'Next Bull Watch'], ['breadth', 'Market Breadth'], ['sectors', 'Sectors'],
+    ['overview', 'Overview'], ['nbull', 'Next Bull Watch'], ['ledger', 'Signal Ledger'], ['breadth', 'Market Breadth'], ['sectors', 'Sectors'],
     ['movers', 'Top Movers'], ['detail', 'Stock Detail'], ['candidates', 'Candidates'],
   ]],
   ['Backtest', [
@@ -68,6 +69,7 @@ export default function App() {
       </aside>
       <main className="main">
         {tab === 'nbull' && <NextBullWatch onOpen={openStock} />}
+        {tab === 'ledger' && <SignalLedger onOpen={openStock} />}
         {tab === 'overview' && <Overview bundle={bundle} onOpen={openStock} goTab={setTab} />}
         {tab === 'breadth' && <Breadth bundle={bundle} />}
         {tab === 'sectors' && <Sectors bundle={bundle} onOpen={openStock} />}

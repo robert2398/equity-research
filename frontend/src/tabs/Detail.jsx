@@ -6,6 +6,11 @@ import {
 } from 'recharts';
 
 const RS_LABEL = { n500: 'vs Nifty 500', midcap: 'vs Midcap 150', smallcap: 'vs Smallcap 250' };
+const RANGES = ['6M', '1Y', '3Y', '5Y', 'ALL'];
+
+// remembered chart preferences (per browser; the chart works without them)
+const pref = (k, dflt) => { try { return localStorage.getItem(`chart:${k}`) || dflt; } catch { return dflt; } };
+const savePref = (k, v) => { try { localStorage.setItem(`chart:${k}`, v); } catch { /* private mode */ } };
 
 export default function Detail({ bundle, focus, onOpen, asOf, clearAsOf }) {
   const [symbol, setSymbol] = useState(focus || 'TECHM');
@@ -13,12 +18,16 @@ export default function Detail({ bundle, focus, onOpen, asOf, clearAsOf }) {
   const [data, setData] = useState(null);
   const [rsKeys, setRsKeys] = useState(['n500']);
   const [rsNorm, setRsNorm] = useState(true);
+  const [tf, setTf] = useState(() => pref('tf', 'D'));
+  const [range, setRange] = useState(() => pref('range', '1Y'));
+  const chooseTf = (v) => { setTf(v); savePref('tf', v); };
+  const chooseRange = (v) => { setRange(v); savePref('range', v); };
 
   useEffect(() => { if (focus) { setSymbol(focus); setInput(focus); } }, [focus]);
   useEffect(() => {
     setData(null);
-    fetchStock(symbol, asOf).then((d) => setData(d || { error: true, symbol }));
-  }, [symbol, asOf]);
+    fetchStock(symbol, asOf, tf).then((d) => setData(d || { error: true, symbol }));
+  }, [symbol, asOf, tf]);
 
   const suggestions = useMemo(() => {
     if (!input || input === symbol) return [];
@@ -78,8 +87,8 @@ export default function Detail({ bundle, focus, onOpen, asOf, clearAsOf }) {
               color: 'inherit', cursor: 'pointer', textDecoration: 'underline' }}>back to live</button>
           </span>
         )}
-        last close ₹{data.ohlc.close[data.ohlc.close.length - 1]} · avg turnover ₹
-        {(data.avg_turnover_20d / 1e7).toFixed(1)}cr (20d)
+        last close ₹{data.last_close ?? data.ohlc.close[data.ohlc.close.length - 1]} · avg turnover ₹
+        {(data.avg_turnover_20d / 1e7).toFixed(1)}cr (20d) · history from {data.first_date}
       </div>
 
       <div className="controls" style={{ position: 'relative' }}>
@@ -104,6 +113,8 @@ export default function Detail({ bundle, focus, onOpen, asOf, clearAsOf }) {
           <div className={r['1m'] >= 0 ? 'value pos' : 'value neg'}>{fmtPct(r['1m'])}</div></div>
         <div className="card"><div className="label">3M</div>
           <div className={r['3m'] >= 0 ? 'value pos' : 'value neg'}>{fmtPct(r['3m'])}</div></div>
+        <div className="card"><div className="label">1Y</div>
+          <div className={r['1y'] >= 0 ? 'value pos' : 'value neg'}>{fmtPct(r['1y'])}</div></div>
         {candInfo && (
           <div className="card"><div className="label">Bear-reversal</div>
             <div className="value">{candInfo.score}{candInfo.provisional ? '*' : ''}</div>
@@ -117,8 +128,21 @@ export default function Detail({ bundle, focus, onOpen, asOf, clearAsOf }) {
       </div>
 
       <div className="panel">
-        <h2 style={{ marginTop: 0 }}>Daily candles + moving averages</h2>
-        <Candles data={data} />
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <h2 style={{ margin: 0 }}>{data.tf === 'W' ? 'Weekly' : 'Daily'} candles + moving averages</h2>
+          <div className="controls" style={{ margin: 0 }}>
+            {[['D', 'Daily'], ['W', 'Weekly']].map(([v, label]) => (
+              <button key={v} className={tf === v ? 'active' : ''} onClick={() => chooseTf(v)}>{label}</button>
+            ))}
+            <span className="mut" style={{ margin: '0 4px' }}>|</span>
+            {RANGES.map((v) => (
+              <button key={v} className={range === v ? 'active' : ''} onClick={() => chooseRange(v)}>{v === 'ALL' ? 'All' : v}</button>
+            ))}
+          </div>
+        </div>
+        <Candles data={data} range={range} />
+        <div className="small">{data.source} · prices adjusted for splits/bonuses (today's basis) ·
+          volume = traded value ÷ close</div>
       </div>
 
       <div className="panel" style={{ marginTop: 12 }}>

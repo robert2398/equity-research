@@ -59,8 +59,36 @@ python bear_reversal/next_bull_watch.py
 
 `run_daily.py` refreshes the watch every day: the **bull clock** (share of all NSE stocks
 above their 200-DMA: WASHOUT / EARLY BULL / BROAD BULL / NEUTRAL), **bagger signals**
-(close ≤ ₹200 · 6-month RS rank ≥ 90 · turnover accelerating ≥ 1.5x; tier A at RS ≥ 95) and
-a **warming** list. Rules and their tested hit rates: `docs/BIG_MOVERS_RESEARCH_PLAN.md` §5b.
+(close ≤ ₹200 · 6-month RS rank ≥ 90 · turnover accelerating ≥ 1.5x; tier A at RS ≥ 95;
+**S** = market cap ≤ ₹1,000 cr) and a **warming** list. Market cap comes from
+`bagger_mcap.py`: NSE's daily MCAP file (shares outstanding, 2024+), one per month, restated to
+today's split/bonus basis and carried back for history.
+
+**Market cap vs the ₹200 price rule (lab, 31 Oct).** Swapping the price rule for a market-cap
+cap made the signal worse at the same breadth: cap ≤ ₹2,000 cr gave a 10x lift of 5.2x / 4.0x,
+vs 9.8x / 4.7x for price ≤ ₹200. Small companies with expensive shares rarely bagged (0.5x
+lift in 2020-24). Adding cap ≤ ₹1,000 cr on top of the price rule gave 10.5x / 14.8x, hence the
+S tag. Pre-2024 caps use the 2024 share count, so later diluters look too big; stocks
+delisted before 2024 have no cap, so these comparisons are made on the known-cap stocks. Rules and their tested hit rates: `docs/BIG_MOVERS_RESEARCH_PLAN.md` §5b.
+
+**Signal ledger (Signal Ledger tab, `signal_ledger.py`).** The daily list flickers: a name's median streak is 3 sessions, 68% come back within 20 sessions, and about 9 genuinely new names arrive a month. So the ledger tracks *episodes*. An episode starts on the first signal after 60 quiet sessions and stays live 60 sessions after the last one.
+
+- **Daily run** (via `next_bull_watch.run`): refreshes `ui_data/signal_ledger_market.json` with every episode of the last year, its A/S tags, and closes since the first signal.
+- **Your decisions** live only in `state/signal_ledger.json`, written by the UI and never touched by the daily run. For each episode: status (new/researching/wait/bought/passed/exited), note, buy and exit price/date, plus your slot count.
+- **The tab shows:**
+  - the queue in priority order (P1 small cap + tier A, P2 small cap, P3 tier A, P4 rest, with lab hit rates);
+  - free slots;
+  - for holdings: return and the trailing stop (close 50% below the highest close since your buy, on split-adjusted closes), with an alert when it is hit;
+  - expired episodes.
+- **Pass notes are deliberate data:** later they let us test whether fundamental filters add lift.
+
+**Biggest past baggers.** `python bear_reversal/bagger_history.py` writes `docs/BIGGEST_BAGGERS.md`: the top buyable bottom→peak runs (`--top 50` now) (peak within 3 years) since 2014, when the BAGGER SIGNAL first fired in each and how much was left, why it missed the others, and a blank fundamentals worksheet per stock. It refuses to overwrite that file once you have filled it in (`--force` / `--out PATH`).
+
+**Their fundamentals.** `python bear_reversal/bagger_fundamentals.py` reads `docs/bagger_fundamentals_annual.csv` (annual figures from screener.in) and writes `docs/BAGGER_FUNDAMENTALS.md`. It compares each bagger at the bottom with the peak, using only the last annual report public on each date: market cap, P/E, P/S, debt, margins, promoter and institutional holding, and shareholder count. It covers the top 50 (SUVEN skipped: its page shows only the post-demerger company). It also counts the common traits, assigns rule-based archetypes (turnaround, deep value, quality compounder, balance-sheet repair), scores each bagger, and proposes the fundamental layers to combine with the signal, plus where to get the data. Winners only, so it doesn't measure lift yet; the market-cap test in the lab does.
+
+Price-level rules (≤ ₹200, ≥ ₹5) use the price actually quoted that day (`close_raw`), not the split-adjusted price — adjusted prices of stocks that later split look artificially cheap, which would leak the future into the rule.
+
+**Research dossier — free, no AI.** *Dossier* on any Next Bull row opens every number behind the signal (rule checks with values, eligibility, signal age and start date, price and volume context, volume-thrust days, delivery %, data-driven watch-outs, the rule's historical hit rates) plus a general research checklist (verify the signal, business and growth, earnings quality, governance red flags, valuation, catalyst, trade plan, kill criteria, where to look) and a ready-to-paste prompt for your own research agent. Ticks are remembered in the browser; *Copy as Markdown* / *Download .md* export it. Facts are computed by `next_bull_watch.py` (`research_dossier.py`); CLI: `python bear_reversal/research_dossier.py SYMBOL` → `reports/dossiers/`.
 
 **AI research notes — on demand only.** In the Next Bull Watch tab, *Research* on a row
 makes one web-grounded call to the model in `bear_reversal.yaml` → `ai_notes`

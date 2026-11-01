@@ -128,6 +128,11 @@ def main() -> int:
         print(f"ui bundle skipped: {type(e).__name__}: {e}")
 
     # next-bull-run watch: bull clock + bagger signals (bagger_lab.py) — best effort
+    try:                                              # NSE share counts: one file a month
+        from bagger_mcap import download as _mcap_dl
+        print(f"mcap files added: {_mcap_dl()}")
+    except Exception as e:
+        print(f"mcap download skipped: {type(e).__name__}: {e}")
     try:
         import json as _json
         from next_bull_watch import run as _nbw

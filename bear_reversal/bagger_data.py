@@ -92,6 +92,10 @@ def build(force: bool = False) -> Path:
     for c in FIELDS:
         w = adj.pivot(index="date", columns="key", values=c).sort_index()
         w.to_parquet(CACHE / f"{c}.parquet")
+    # the price actually quoted that day: price-level rules (<= Rs 200) must use this, since
+    # back-adjusted prices of stocks that LATER split/bonused look artificially low
+    (raw.pivot(index="date", columns="key", values="close").sort_index()
+        .to_parquet(CACHE / "close_raw.parquet"))
 
     # delivery % (2020+) re-keyed symbol -> key; split days don't distort a percentage
     _, panel_path = _sources()
@@ -115,14 +119,23 @@ def build(force: bool = False) -> Path:
 
 
 def load() -> dict[str, pd.DataFrame]:
-    """{'close','high','low','open','turnover','deliv'} wide frames + 'symbol' Series(key->sym)."""
+    """{'close','high','low','open','turnover','deliv','close_raw','mcap'} wide frames +
+    'symbol' Series(key->sym). close_raw = the unadjusted price quoted on that day; mcap =
+    market cap in Rs crore (bagger_mcap.py; None before its first download)."""
+    if not (CACHE / "close_raw.parquet").exists():
+        build(force=True)
     build()
     out = {c: pd.read_parquet(CACHE / f"{c}.parquet") for c in FIELDS}
+    out["close_raw"] = pd.read_parquet(CACHE / "close_raw.parquet").reindex(
+        index=out["close"].index, columns=out["close"].columns)
     dp = CACHE / "deliv.parquet"
     out["deliv"] = (pd.read_parquet(dp) if dp.exists() else pd.DataFrame(index=out["close"].index)
                     ).reindex(index=out["close"].index, columns=out["close"].columns)
     k = pd.read_parquet(CACHE / "keys.parquet")
     out["symbol"] = k.set_index("key")["symbol"].reindex(out["close"].columns)
+    # market cap (Rs cr) from NSE share counts; absent until bagger_mcap.py has downloaded
+    from bagger_mcap import RAW, load as load_mcap
+    out["mcap"] = load_mcap(out) if any(RAW.glob("*.parquet")) else None
     return out
 
 

@@ -163,7 +163,15 @@ NEUTRAL from % of stocks above 200-DMA), signals (tier A = RS ≥ 95, days-on fr
 warming list. Optional on-demand AI research notes per name (`ai_notes.py`, never automatic,
 never changes the list).
 
-**Still open:** fundamentals (earnings inflection, promoter buying, pledges) — the 100-bagger
+**Price rule on quoted prices (fixed 31 Oct):** the ≤ ₹200 test first ran on split-adjusted prices, which make stocks that LATER split look cheap in the past (look-ahead). Re-run on the price quoted that day: BAGGER SIGNAL ≥10x lift 9.5x / 4.7x (was 10.6x / 4.1x), ≥5x hit 4.7% / 8.9%, ~10-16 names per date; the price trait alone still lifts ≥10x 2.5x / 2.1x. Conclusions unchanged. The cap's cost is visible in `docs/BIGGEST_BAGGERS.md`: all 8 of the top-20 runs the signal missed (ATGL, ADANIENT, MAZDOCK, BSE, …) were quoted above ₹200 when RS and turnover qualified.
+
+**Signal age (tested 31 Oct):** buying on the day the signal fires did NOT beat buying after it had held 10-20 sessions (≥5x hit 2.7% vs 3.4-4.4% in 2015-19; 8.0% vs 9.4-10.0% in 2020-24; realised returns flat across ages). No reason to rush — the per-stock research dossier (`research_dossier.py`) exists to use that time.
+
+**Market cap (tested 31 Oct, `bagger_mcap.py` + lab `mcap_layer`):** replacing price ≤ ₹200 with a market-cap cap is worse (cap ≤ ₹2,000 cr: 10x lift 5.2x / 4.0x vs 9.8x / 4.7x). Signal + cap ≤ ₹1,000 cr: 10.5x / 14.8x (~3.5 names/date), shown as the S tag. Caveat: NSE share counts start 2024 and are carried back; delisted-before-2024 stocks lack a cap, so the comparison uses known-cap stocks only.
+
+**Fundamentals of the top-50 baggers (`docs/BAGGER_FUNDAMENTALS.md`):** median sales grew only 1.8x bottom FY → peak FY, while median P/S went 0.66 → 7.9: re-rating did most of the work. 38/50 were a turnaround (16), deep value (22) or quality compounder (10) at the bottom; 32/50 had P/S < 1; 41/46 non-lenders had positive operating cash flow. Winners only: losers need the same fields before any lift is claimed.
+
+**Still open:** point-in-time fundamentals for losers too (earnings inflection, promoter buying, pledges) — the 100-bagger
 literature's strongest trait — are not in the bhavcopy data; sector clustering on the full
 market (needs dated sector map); position sizing / portfolio simulation of the signal.
 

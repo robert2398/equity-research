@@ -5,12 +5,19 @@
 Serves:
   /                      -> frontend/dist (built React app)
   /api/bundle            -> ui_data/bundle.json
-  /api/stock/<SYMBOL>    -> on-demand candles + MAs + RS vs benchmarks (from the
+  /api/stock/<SYMBOL>[?tf=W&asof=] -> candles (daily or weekly, since 2014, any NSE stock) +
+                             MAs + RS vs benchmarks (full-market panel; Kite store fallback; from the
                              shared parquet store, read-only)
   /api/sector/<NAME>     -> sector index close series
   POST /api/ai-note/<SYM>[?deep=1] -> on-demand AI research note for a Next Bull name (ai_notes.py;
                              the only routes that spend LLM tokens, one call per click)
   POST /api/ai-brief      -> on-demand AI market/regime brief
+  /api/dossier/<SYM>      -> research dossier for a Next Bull name: signal facts + research
+                             checklist + Markdown (research_dossier.py; no LLM)
+  /api/ledger             -> signal ledger: episodes + your decisions (signal_ledger.py)
+  POST /api/ledger/<ID>   -> save your decision on one episode (JSON body: status, note,
+                             buy_date, buy_price, exit_date, exit_price)
+  POST /api/ledger-settings -> {"slots": N}
 
 Dev mode: `npm run dev` in frontend/ proxies /api to this server (vite.config.js).
 """
@@ -71,52 +78,93 @@ def _bench_series() -> dict[str, pd.Series]:
     return _cache["bench"]
 
 
-def stock_payload(symbol: str, sessions: int = 500, asof: str | None = None) -> dict | None:
-    dao = _dao()
-    token_row = dao.universe[dao.universe["symbol"] == symbol.upper()] if dao.universe is not None else None
-    if token_row is None or not len(token_row):
+def _panel_candles(symbol: str) -> pd.DataFrame | None:
+    """Daily split/bonus-adjusted OHLC for any NSE stock since 2014 (incl. delisted), read
+    column-wise from the bagger panel cache (bagger_data.py). volume = traded value / close."""
+    from bagger_data import CACHE
+    kp = CACHE / "keys.parquet"
+    if not kp.exists():
         return None
-    df = dao.store.read_candles("stock", int(token_row["token"].iloc[0]))
+    stamp = kp.stat().st_mtime
+    if _cache.get("keys_stamp") != stamp:
+        k = pd.read_parquet(kp)
+        _cache["keys"] = dict(zip(k["symbol"].astype(str).str.upper(), k["key"]))
+        _cache["keys_stamp"] = stamp
+    key = _cache["keys"].get(symbol.upper())
+    if key is None:
+        return None
+    cols = {f: pd.read_parquet(CACHE / f"{f}.parquet", columns=[key])[key]
+            for f in ("open", "high", "low", "close", "turnover")}
+    df = pd.DataFrame(cols).dropna(subset=["close"])
+    for f in ("open", "high", "low"):
+        df[f] = df[f].fillna(df["close"])
+    df["volume"] = (df["turnover"] / df["close"]).fillna(0)
+    return df.rename_axis("date").reset_index()
+
+
+def _kite_candles(symbol: str) -> pd.DataFrame | None:
+    dao = _dao()
+    row = dao.universe[dao.universe["symbol"] == symbol.upper()] if dao.universe is not None else None
+    if row is None or not len(row):
+        return None
+    return dao.store.read_candles("stock", int(row["token"].iloc[0]))
+
+
+WEEKLY = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+MA_WINDOWS = {"D": (20, 50, 200), "W": (10, 30, 40)}     # 40 weeks ~ 200 sessions
+
+
+def stock_payload(symbol: str, asof: str | None = None, tf: str = "D") -> dict | None:
+    """Candles + MAs (daily, or weekly bars ending Friday) for the whole history since 2014,
+    plus RS vs benchmarks. The full-market panel first; the Kite store as a fallback."""
+    tf = "W" if str(tf).upper().startswith("W") else "D"
+    df, source = _panel_candles(symbol), "full-market panel (split-adjusted)"
+    if df is None or not len(df):
+        df, source = _kite_candles(symbol), "kite store"
     if df is None or not len(df):
         return None
+    df = df.assign(date=pd.to_datetime(df["date"]))
     if asof:
         df = df[df["date"] <= pd.Timestamp(asof)]
-        if df is None or not len(df):
+        if not len(df):
             return None
-    df = df.tail(sessions).reset_index(drop=True)
+    df = df.reset_index(drop=True)
     c = df["close"]
     c.index = pd.DatetimeIndex(df["date"])          # date-indexed for benchmark joins
-    ma20 = c.rolling(20).mean()
-    ma50 = c.rolling(50).mean()
-    ma200 = c.rolling(200).mean()
+
+    bars = df.set_index("date")[list(WEEKLY)]
+    if tf == "W":
+        bars = bars.resample("W-FRI").agg(WEEKLY).dropna(subset=["close"])
+        bars.index = [d.date() if d <= c.index[-1] else c.index[-1].date() for d in bars.index]
+        bars.index = pd.DatetimeIndex(bars.index)   # last bar dated at the last session
+    mas = {f"ma{i}": bars["close"].rolling(n).mean()
+           for i, n in zip((20, 50, 200), MA_WINDOWS[tf])}
 
     rs = {}
     for label, bench in _bench_series().items():
-        a = pd.concat([c.rename("s"), bench.rename("b")], axis=1, join="inner").dropna()
+        a = pd.concat([c.rename("s"), bench.rename("b")], axis=1, join="inner").dropna().tail(500)
         if len(a) > 30:
-            rs[label] = {"dates": [d.strftime("%Y-%m-%d") for d in a.index][-sessions:],
-                         "ratio": [round(float(v), 5) for v in (a["s"] / a["b"]).tolist()][-sessions:],
+            rs[label] = {"dates": [d.strftime("%Y-%m-%d") for d in a.index],
+                         "ratio": [round(float(v), 5) for v in (a["s"] / a["b"]).tolist()],
                          "name": str(bench.name or label)}
     rets = {}
-    for lbl, n in (("1w", 5), ("1m", 21), ("3m", 63)):
+    for lbl, n in (("1w", 5), ("1m", 21), ("3m", 63), ("1y", 252)):
         rets[lbl] = round(float(c.iloc[-1] / c.iloc[-1 - n] - 1.0), 4) if len(c) > n else None
+    rnd = lambda col: [None if v != v else round(float(v), 2) for v in col]
     return {
         "symbol": symbol.upper(),
-        "sector": dao.sector_of().get(symbol.upper(), "UNMAPPED"),
-        "dates": [d.strftime("%Y-%m-%d") for d in df["date"]],
-        "ohlc": {
-            "open": [round(float(v), 2) for v in df["open"]],
-            "high": [round(float(v), 2) for v in df["high"]],
-            "low": [round(float(v), 2) for v in df["low"]],
-            "close": [round(float(v), 2) for v in df["close"]],
-        },
-        "volume": [float(v) for v in df["volume"]],
-        "ma20": [None if v != v else round(float(v), 2) for v in ma20],
-        "ma50": [None if v != v else round(float(v), 2) for v in ma50],
-        "ma200": [None if v != v else round(float(v), 2) for v in ma200],
+        "sector": _dao().sector_of().get(symbol.upper(), "UNMAPPED"),
+        "tf": tf, "source": source,
+        "first_date": df["date"].iloc[0].strftime("%Y-%m-%d"),
+        "dates": [d.strftime("%Y-%m-%d") for d in bars.index],
+        "ohlc": {k: rnd(bars[k]) for k in ("open", "high", "low", "close")},
+        "volume": [float(v) for v in bars["volume"].fillna(0)],
+        **{k: rnd(v) for k, v in mas.items()},
+        "ma_labels": [f"MA{n}" if tf == "D" else f"{n}W" for n in MA_WINDOWS[tf]],
         "rs": rs,
         "returns": rets,
-        "avg_turnover_20d": round(float((c * df["volume"]).tail(20).mean()), 0),
+        "last_close": round(float(c.iloc[-1]), 2),
+        "avg_turnover_20d": round(float((c * df["volume"].to_numpy()).tail(20).mean()), 0),
     }
 
 
@@ -170,11 +218,32 @@ class Handler(BaseHTTPRequestHandler):
             code = 500
         self._send(code, body, "application/json")
 
+    def _body(self) -> dict:
+        n = int(self.headers.get("Content-Length") or 0)
+        if not 0 <= n <= 64_000:
+            raise ValueError("request too large")
+        return json.loads(self.rfile.read(n) or b"{}") if n else {}
+
     def do_POST(self):  # noqa: N802
-        """On-demand AI research: the only routes that spend LLM tokens (one call per click)."""
+        """Ledger decisions, and on-demand AI research (the only routes that spend LLM tokens,
+        one call per click)."""
         import urllib.parse as _up
         parsed = _up.urlparse(self.path)
         path = urllib.parse.unquote(parsed.path)
+        ml = re.match(r"^/api/ledger/([A-Za-z0-9&\-_.]{1,20}:\d{4}-\d{2}-\d{2})$", path)
+        if ml or path == "/api/ledger-settings":
+            import signal_ledger
+            try:
+                body = self._body()
+                if not isinstance(body, dict):
+                    raise ValueError("JSON object expected")
+                self._json(signal_ledger.set_entry(ml.group(1), body) if ml
+                           else signal_ledger.set_settings(body))
+            except (KeyError, FileNotFoundError) as e:
+                self._json({"error": str(e).strip("'\"")}, 404)
+            except (ValueError, TypeError) as e:
+                self._json({"error": str(e)}, 400)
+            return
         q = _up.parse_qs(parsed.query)
         refresh = q.get("refresh", ["0"])[0] == "1"
         deep = q.get("deep", ["0"])[0] == "1"
@@ -224,6 +293,25 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"error": "no watch — produced by run_daily.py"}, 404)
             return
+        if path == "/api/ledger":                     # signal ledger — no LLM, no cost
+            import signal_ledger
+            try:
+                self._json(signal_ledger.view())
+            except FileNotFoundError as e:
+                self._json({"error": str(e)}, 404)
+            return
+        m = re.match(r"^/api/dossier/([A-Za-z0-9&\-_.]{1,20})$", path)
+        if m:                                         # research dossier — no LLM, no cost
+            p = UI_DATA / "next_bull_watch.json"
+            if not p.exists():
+                self._json({"error": "no watch — produced by run_daily.py"}, 404)
+                return
+            from research_dossier import build
+            try:
+                self._json(build(json.loads(p.read_text(encoding="utf-8")), m.group(1)))
+            except KeyError as e:
+                self._json({"error": str(e).strip("'\"")}, 404)
+            return
         m = re.match(r"^/api/mover-structure$", path)
         if m:
             p = UI_DATA / "mover_structure.json"
@@ -257,7 +345,7 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/stock/([A-Za-z0-9&\-.+]+)$", path)
         if m:
             asof = qs.get("asof", [None])[0]
-            payload = stock_payload(m.group(1), asof=asof)
+            payload = stock_payload(m.group(1), asof=asof, tf=qs.get("tf", ["D"])[0])
             self._json(payload if payload else {"error": "unknown symbol"}, 200 if payload else 404)
             return
         m = re.match(r"^/api/sector/(.+)$", path)

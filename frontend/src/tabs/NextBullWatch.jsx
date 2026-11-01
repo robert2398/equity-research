@@ -3,7 +3,7 @@ import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
 } from 'recharts';
 import {
-  fetchNextBullWatch, requestAiNote, requestAiBrief, fmtPct, fmtNum,
+  fetchNextBullWatch, fetchDossier, requestAiNote, requestAiBrief, fmtPct, fmtNum,
 } from '../api.js';
 
 const PHASE_CLASS = {
@@ -66,6 +66,8 @@ function ResearchModal({ row, note, busy, meta, isSignal, onRun, onClose, onOpen
         <div className="modal-body">
           <div className="facts">
             <div className="fact"><div className="k">Close</div><div className="v">₹{fmtNum(row.close, 1)}</div></div>
+            <div className="fact"><div className="k">Market cap</div>
+              <div className="v">{row.mcap_cr != null ? `₹${fmtNum(row.mcap_cr, 0)}cr` : '–'}</div></div>
             <div className="fact"><div className="k">RS 6m / 12m</div>
               <div className="v">{fmtNum(row.rs126, 0)} / {fmtNum(row.rs252, 0)}</div></div>
             <div className="fact"><div className="k">Turnover accel</div>
@@ -75,7 +77,7 @@ function ResearchModal({ row, note, busy, meta, isSignal, onRun, onClose, onOpen
               <div className={`v ${row.ret6m >= 0 ? 'pos' : 'neg'}`}>{fmtPct(row.ret6m, 0)}</div></div>
             <div className="fact"><div className="k">Off 3y high</div><div className="v neg">{fmtPct(row.dd3y, 0)}</div></div>
             {isSignal && <div className="fact"><div className="k">Signal age</div>
-              <div className="v">{row.days_on >= 20 ? '20+' : row.days_on} sessions</div></div>}
+              <div className="v">{row.days_on} sessions</div></div>}
           </div>
 
           {busy && (
@@ -209,15 +211,220 @@ function AiBrief({ initial, enabled }) {
   );
 }
 
-function StockTable({ rows, onOpen, isSignal, aiMeta, notes, busy, onAi }) {
+/** Checklist with per-stock ticks remembered in this browser (convenience only). */
+function Checklist({ symbol, sections }) {
+  const key = `dossier-checks:${symbol}`;
+  const [done, setDone] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(key) || '{}'); } catch { return {}; }
+  });
+  const toggle = (id) => {
+    const next = { ...done, [id]: !done[id] };
+    setDone(next);
+    try { localStorage.setItem(key, JSON.stringify(next)); } catch { /* storage unavailable */ }
+  };
+  const isList = (s) => s.title.startsWith('Kill') || s.title.startsWith('Where');
+  const total = sections.filter((s) => !isList(s)).reduce((n, s) => n + s.items.length, 0);
+  const ticked = Object.values(done).filter(Boolean).length;
+  return (
+    <div>
+      <div className="small" style={{ marginBottom: 6 }}>{ticked} of {total} checked · ticks are saved in this browser</div>
+      {sections.map((s, si) => {
+        const kill = s.title.startsWith('Kill');
+        return (
+          <div key={s.title} className={`note-sec ${kill ? 'flags' : ''}`}>
+            <h3>{s.title}</h3>
+            {isList(s) ? (
+              <ul>{s.items.map((it) => <li key={it}>{it}</li>)}</ul>
+            ) : (
+              <div>
+                {s.items.map((it, ii) => {
+                  const id = `${si}-${ii}`;
+                  return (
+                    <label key={id} className="check">
+                      <input type="checkbox" checked={!!done[id]} onChange={() => toggle(id)} />
+                      <span className={done[id] ? 'mut' : ''}>{it}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Research dossier: everything behind the signal + what to research next. No LLM. */
+export function DossierModal({ symbol, onClose, onOpenChart }) {
+  const [d, setD] = useState(null);
+  const [copied, setCopied] = useState('');
+  useEffect(() => { setD(null); fetchDossier(symbol).then(setD); }, [symbol]);
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const copy = async (text, what) => {
+    try { await navigator.clipboard.writeText(text); setCopied(what); } catch { setCopied('copy blocked'); }
+    setTimeout(() => setCopied(''), 1800);
+  };
+  const download = () => {
+    const url = URL.createObjectURL(new Blob([d.markdown], { type: 'text/markdown' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = `${symbol}_dossier_${d.facts.screen_date}.md`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const fx = d?.facts;
+  const p = fx?.price;
+  const v = fx?.volume;
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal wide" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <div>
+            <div className="title">
+              {symbol} — research dossier{' '}
+              {d && !d.error && (d.kind === 'BUY SIGNAL'
+                ? <span className="pill green">BUY SIGNAL{d.tier === 'A' ? ' · tier A' : ''}</span>
+                : <span className="pill amber">WARMING · watch only</span>)}
+            </div>
+            <div className="subtitle">
+              {fx ? `screen date ${fx.screen_date} · bull clock ${d.regime.phase} · built from price/volume data, no AI`
+                : 'loading…'}
+            </div>
+          </div>
+          <button type="button" className="btn ghost" onClick={onClose} aria-label="close">✕</button>
+        </div>
+
+        {d?.error && <div className="modal-body"><div className="empty-ai neg">{d.error}</div></div>}
+
+        {fx && (
+          <div className="modal-body">
+            <div className="note-sec" style={{ marginTop: 0 }}>
+              <h3>Why the rules flagged it</h3>
+              <table className="plain">
+                <tbody>
+                  {fx.signal_checks.map((c) => (
+                    <tr key={c.rule}>
+                      <td>{c.pass ? <span className="pos">✓</span> : <span className="neg">✗</span>}</td>
+                      <td><b>{c.rule}</b></td>
+                      <td>{c.value}</td>
+                      <td className="small">{c.why}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="small" style={{ marginTop: 6 }}>
+                Eligibility: {fx.eligibility.map((e) => `${e.pass ? '✓' : '✗'} ${e.rule} (${e.value})`).join(' · ')}
+              </div>
+              {fx.size?.mcap_cr != null && (
+                <div className="small" style={{ marginTop: 4 }}>
+                  Market cap <b>₹{fmtNum(fx.size.mcap_cr, 0)}cr</b>
+                  {fx.size.small ? ' — inside the small-cap layer (≤ ₹1,000cr)' : ''} · {fx.size.note}
+                </div>)}
+              <div className="small" style={{ marginTop: 4 }}>
+                Signal held <b>{fx.signal_history.age_sessions}</b> sessions
+                {fx.signal_history.streak_start ? ` (since ${fx.signal_history.streak_start})` : ''} ·
+                switched on {fx.signal_history.streaks_last_year} time(s) in the last year
+              </div>
+            </div>
+
+            <div className="note-sec">
+              <h3>Price context</h3>
+              <div className="facts">
+                <div className="fact"><div className="k">Close</div><div className="v">₹{fmtNum(p.close, 1)}</div></div>
+                <div className="fact"><div className="k">52w high</div><div className="v">₹{fmtNum(p.hi52, 1)}</div>
+                  <div className="small">{p.hi52_date} · {fmtPct(p.off_hi52, 0)}</div></div>
+                <div className="fact"><div className="k">52w low</div><div className="v">₹{fmtNum(p.lo52, 1)}</div>
+                  <div className="small">{p.lo52_date} · {fmtPct(p.off_lo52, 0)}</div></div>
+                <div className="fact"><div className="k">Off 3y high</div><div className="v neg">{fmtPct(p.dd3y, 0)}</div>
+                  <div className="small">high on {p.hi3y_date}</div></div>
+                <div className="fact"><div className="k">vs 50-DMA</div>
+                  <div className={`v ${p.vs_ma50 >= 0 ? 'pos' : 'neg'}`}>{fmtPct(p.vs_ma50, 0)}</div></div>
+                <div className="fact"><div className="k">vs 200-DMA</div>
+                  <div className={`v ${p.vs_ma200 >= 0 ? 'pos' : 'neg'}`}>{fmtPct(p.vs_ma200, 0)}</div>
+                  <div className="small">200-DMA {p.ma200_rising ? 'rising' : 'falling'}</div></div>
+              </div>
+              <div className="small" style={{ marginTop: 6 }}>
+                Returns: {Object.entries(p.returns).map(([k, x]) => `${k} ${fmtPct(x, 0)}`).join(' · ')}
+              </div>
+            </div>
+
+            <div className="note-sec">
+              <h3>Volume &amp; demand</h3>
+              <div className="facts">
+                <div className="fact"><div className="k">Turnover 20d</div><div className="v">₹{fmtNum(v.turnover_20d_cr, 1)}cr</div>
+                  <div className="small">vs ₹{fmtNum(v.turnover_base_cr, 1)}cr prior 120d</div></div>
+                <div className="fact"><div className="k">Acceleration</div><div className="v">{fmtNum(v.accel, 1)}x</div></div>
+                <div className="fact"><div className="k">Biggest day</div><div className="v">{fmtPct(v.max_day_share_20d, 0)}</div>
+                  <div className="small">of 20-day turnover</div></div>
+                <div className="fact"><div className="k">Delivery %</div><div className="v">{fmtNum(v.delivery_20d, 0)}%</div>
+                  <div className="small">vs {fmtNum(v.delivery_base, 0)}% before</div></div>
+              </div>
+              {!!v.thrust_days_63d.length && (
+                <div className="small" style={{ marginTop: 6 }}>
+                  Volume-thrust days (≥2x turnover, +5%, above 20-DMA):{' '}
+                  {v.thrust_days_63d.map((t) => `${t.date} ${fmtPct(t.move, 0)} on ${t.turnover_x}x`).join(' · ')}
+                </div>
+              )}
+            </div>
+
+            <div className="note-sec flags">
+              <h3>Watch-outs from the data</h3>
+              {fx.watch_outs.length
+                ? <ul>{fx.watch_outs.map((w) => <li key={w}>{w}</li>)}</ul>
+                : <div className="small">none triggered</div>}
+            </div>
+
+            {!!d.backtest.length && (
+              <div className="note-sec">
+                <h3>How this rule has done historically</h3>
+                <ul>{d.backtest.map((x) => <li key={x} className="small">{x}</li>)}</ul>
+              </div>
+            )}
+
+            <div className="note-sec">
+              <h3>Research checklist</h3>
+              <Checklist symbol={symbol} sections={d.checklist} />
+            </div>
+
+            <div className="note-sec">
+              <h3>
+                Prompt for your own research agent{' '}
+                <button type="button" className="btn xs" onClick={() => copy(d.agent_prompt, 'prompt copied')}>copy</button>
+              </h3>
+              <div className="prompt-box">{d.agent_prompt}</div>
+            </div>
+          </div>
+        )}
+
+        <div className="modal-foot">
+          <div className="small">{copied || 'no AI used · research list, not advice'}</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" className="btn" onClick={() => onOpenChart(symbol)}>Open chart</button>
+            {d && !d.error && <>
+              <button type="button" className="btn" onClick={() => copy(d.markdown, 'markdown copied')}>Copy as Markdown</button>
+              <button type="button" className="btn primary" onClick={download}>Download .md</button>
+            </>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StockTable({ rows, onOpen, isSignal, aiMeta, notes, busy, onAi, onDossier }) {
   return (
     <div className="panel" style={{ overflowX: 'auto', marginTop: 8 }}>
       <table>
         <thead><tr>
-          <th>#</th><th>Symbol</th><th>Close ₹</th><th>RS 6m</th><th>RS 12m</th>
+          <th>#</th><th>Symbol</th><th>Close ₹</th><th title="NSE shares outstanding x close">Mcap ₹cr</th><th>RS 6m</th><th>RS 12m</th>
           <th>Turnover accel</th><th>Turnover ₹cr</th><th>Thrusts 63d</th><th>Off 3y high</th>
           <th>6M</th>{isSignal && <th title="consecutive sessions the buy signal has held">Signal age</th>}
-          <th>Score</th>{aiMeta && <th>AI</th>}
+          <th>Score</th><th>Research</th>
         </tr></thead>
         <tbody>
           {rows.map((r, i) => (
@@ -226,9 +433,11 @@ function StockTable({ rows, onOpen, isSignal, aiMeta, notes, busy, onAi }) {
               <td>
                 {r.symbol}{' '}
                 {r.tier === 'A' && <span className="pill hi" title="RS rank >= 95">A</span>}{' '}
+                {r.small && <span className="pill hi" title="market cap <= ₹1,000cr: small-cap layer">S</span>}{' '}
                 {isSignal && r.days_on <= FRESH_DAYS && <span className="pill green" title="signal fired in the last 3 sessions">NEW</span>}
               </td>
               <td>{fmtNum(r.close, 1)}</td>
+              <td>{r.mcap_cr != null ? fmtNum(r.mcap_cr, 0) : '–'}</td>
               <td>{fmtNum(r.rs126, 0)}</td>
               <td>{fmtNum(r.rs252, 0)}</td>
               <td>{fmtNum(r.turnover_accel, 1)}x</td>
@@ -236,13 +445,17 @@ function StockTable({ rows, onOpen, isSignal, aiMeta, notes, busy, onAi }) {
               <td>{r.thrust_count_63d}</td>
               <td className="neg">{fmtPct(r.dd3y, 0)}</td>
               <td className={r.ret6m >= 0 ? 'pos' : 'neg'}>{fmtPct(r.ret6m, 0)}</td>
-              {isSignal && <td>{r.days_on >= 20 ? '20+' : r.days_on}</td>}
+              {isSignal && <td>{r.days_on}</td>}
               <td><b>{fmtNum(r.score, 0)}</b></td>
-              {aiMeta && (
-                <td onClick={(e) => e.stopPropagation()}>
-                  <AiButton note={notes[r.symbol]} busy={busy[r.symbol]} onClick={() => onAi(r, isSignal)} />
-                </td>
-              )}
+              <td onClick={(e) => e.stopPropagation()}>
+                <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                  <button type="button" className="btn xs" onClick={() => onDossier(r.symbol)}
+                    title="everything behind the signal + research checklist (no AI, free)">Dossier</button>
+                  {aiMeta && (
+                    <AiButton note={notes[r.symbol]} busy={busy[r.symbol]} onClick={() => onAi(r, isSignal)} />
+                  )}
+                </div>
+              </td>
             </tr>
           ))}
           {!rows.length && (
@@ -266,7 +479,9 @@ function HowItWorks({ data }) {
         <span className="n">2</span><span className="t">What — BUY SIGNAL</span>
         <div className="d">All three at today's close: price ≤ ₹200 · 6-month return in the top 10% of
           NSE (RS ≥ 90) · 20-day trading value ≥ 1.5x the prior 120 days. Every name in the
-          "Buy signals" table qualifies; <b>NEW</b> = fired in the last {FRESH_DAYS} sessions.</div>
+          "Buy signals" table qualifies; <b>NEW</b> = fired in the last {FRESH_DAYS} sessions. Tested:
+          day-1 signals did <i>not</i> beat ones that had held 10–20 sessions, so there is time to
+          research first — open a stock's <b>Dossier</b>.</div>
       </div>
       <div className="step">
         <span className="n">3</span><span className="t">How — size &amp; exit</span>
@@ -284,6 +499,7 @@ export default function NextBullWatch({ onOpen }) {
   const [notes, setNotes] = useState({});
   const [busy, setBusy] = useState({});
   const [modal, setModal] = useState(null);           // { row, isSignal }
+  const [dossier, setDossier] = useState(null);       // symbol
 
   useEffect(() => {
     fetchNextBullWatch().then((d) => {
@@ -309,7 +525,7 @@ export default function NextBullWatch({ onOpen }) {
   const hist = r.history.dates.map((d, i) => ({ date: d, breadth: r.history.breadth200[i] * 100 }));
   const fresh = data.signals.filter((s) => s.days_on <= FRESH_DAYS).length;
   const tableProps = { onOpen, aiMeta: data.ai_meta, notes, busy,
-    onAi: (row, isSignal) => setModal({ row, isSignal }) };
+    onAi: (row, isSignal) => setModal({ row, isSignal }), onDossier: setDossier };
 
   return (
     <div>
@@ -343,7 +559,8 @@ export default function NextBullWatch({ onOpen }) {
         <div className="grid cards" style={{ alignContent: 'start' }}>
           <div className="card"><div className="label">Buy signals</div>
             <div className="value pos">{data.signals_total}</div>
-            <div className="note">{fresh} new · tier A {data.signals.filter((s) => s.tier === 'A').length}</div></div>
+            <div className="note">{fresh} new · tier A {data.signals.filter((s) => s.tier === 'A').length}
+              {' '}· small cap {data.signals.filter((s) => s.small).length}</div></div>
           <div className="card"><div className="label">Warming</div>
             <div className="value">{data.warming_total}</div>
             <div className="note">watch only</div></div>
@@ -357,8 +574,9 @@ export default function NextBullWatch({ onOpen }) {
       <HowItWorks data={data} />
 
       <h2 style={{ marginTop: 18 }}>Buy signals <span className="pill green">BAGGER SIGNAL</span></h2>
-      <div className="small">{data.criteria.signal} · tier A = {data.criteria.tier_a} · click a row
-        for the chart, AI for research</div>
+      <div className="small">{data.criteria.signal} · tier A = {data.criteria.tier_a}
+        {data.criteria.small && <> · S = {data.criteria.small}</>} · click a row
+        for the chart · Dossier = facts + research checklist (free) · AI = web research (paid)</div>
       <StockTable rows={data.signals} isSignal {...tableProps} />
 
       <h2 style={{ marginTop: 18 }}>Warming <span className="pill amber">watch only — not a buy</span></h2>
@@ -381,6 +599,10 @@ export default function NextBullWatch({ onOpen }) {
           note={notes[modal.row.symbol]} busy={busy[modal.row.symbol]}
           onRun={runAi} onClose={() => setModal(null)}
           onOpenChart={(s) => { setModal(null); onOpen(s); }} />
+      )}
+      {dossier && (
+        <DossierModal symbol={dossier} onClose={() => setDossier(null)}
+          onOpenChart={(s) => { setDossier(null); onOpen(s); }} />
       )}
     </div>
   );
@@ -430,7 +652,9 @@ function BacktestPanel({ bt }) {
       )}
       <div className="small" style={{ marginTop: 6 }}>
         hit rates use the max close within 2 years (a hindsight ceiling); realised rows use the
-        exit rule · full tables: bear_reversal/reports/BAGGER_LAB.md
+        exit rule · ¹ market-cap rows are measured on stocks with a known NSE share count
+        (2024+ counts carried back; stocks delisted before 2024 excluded) · full tables:
+        bear_reversal/reports/BAGGER_LAB.md
       </div>
     </div>
   );

@@ -43,6 +43,7 @@ SPLIT_DATE = pd.Timestamp("2020-01-01")
 JUMP_MAX = 1.60
 # frozen rule thresholds (centre of the tested grid, not its best cell)
 SIG_PRICE, SIG_RS, SIG_ACCEL = 200.0, 90.0, 1.5
+SMALL_CAP = 1000.0          # Rs cr: the market-cap layer on top of the signal (mcap_layer)
 WASHOUT_6M, RECOVERY = 0.35, 0.10
 
 
@@ -56,6 +57,14 @@ class Panel:
         self.dates = c.index
         self.close = c
         self.c = c.to_numpy()
+        # price quoted that day (unadjusted): used for price-LEVEL rules only — adjusted
+        # prices of stocks that later split look artificially cheap (look-ahead)
+        self.close_raw = w["close_raw"].astype("float32")
+        self.c_raw = self.close_raw.to_numpy()
+        m = w.get("mcap")
+        # market cap, Rs crore (NaN where NSE has no share count, e.g. delisted before 2024)
+        self.mcap = (m.astype("float32").to_numpy() if m is not None
+                     else np.full(self.c.shape, np.nan, dtype="float32"))
         self.tv = w["turnover"].astype("float32").to_numpy()
         self.deliv = w["deliv"].astype("float32").to_numpy()
         self.ma20 = c.rolling(20, min_periods=15).mean().to_numpy()
@@ -72,6 +81,47 @@ class Panel:
         valid = ~np.isnan(self.ma200) & ~np.isnan(self.c)
         above = (self.c > self.ma200) & valid
         self.breadth200 = pd.Series(above.sum(1) / np.maximum(valid.sum(1), 1), index=self.dates)
+
+    def signal_matrix(self) -> pd.DataFrame:
+        """BAGGER SIGNAL for every stock on every session (vectorised twin of
+        features_at + bagger_signal; agreement is measured in signal_age_study)."""
+        if hasattr(self, "_sig"):
+            return self._sig
+        c = self.close
+        tv = pd.DataFrame(self.tv, index=self.dates, columns=c.columns)
+        tv60 = tv.rolling(60, min_periods=1).median()
+        tv20 = tv.rolling(20, min_periods=1).median()
+        tv_base = tv.shift(20).rolling(120, min_periods=1).median()
+        n_hist = c.notna().cumsum()
+        jump = (pd.DataFrame(1 + self.r1, index=self.dates, columns=c.columns)
+                .rolling(252, min_periods=1).max() > JUMP_MAX)
+        fund = self.symbol.map(_is_fund).astype(bool).to_numpy()
+        raw = self.close_raw
+        elig = ((tv60 >= MIN_TURNOVER) & (n_hist >= 260) & (raw >= 5) & ~jump)
+        elig.loc[:, fund] = False
+        ret6 = (c / c.shift(126) - 1).where(elig)
+        rs126 = ret6.rank(axis=1, pct=True) * 100
+        self._rs126 = rs126                       # read by the signal ledger (tier A tags)
+        self._parts = {"eligible": elig, "price_ok": raw <= SIG_PRICE,
+                       "rs_ok": rs126 >= SIG_RS, "accel_ok": tv20 / tv_base >= SIG_ACCEL}
+        self._sig = (elig & self._parts["price_ok"] & self._parts["rs_ok"]
+                     & self._parts["accel_ok"])
+        return self._sig
+
+    def signal_parts(self) -> dict[str, pd.DataFrame]:
+        """The signal's separate conditions (date x key booleans) — for 'why it missed'."""
+        self.signal_matrix()
+        return self._parts
+
+    def signal_age(self) -> pd.DataFrame:
+        """Consecutive sessions (incl. today) the signal has held; 0 when off."""
+        if hasattr(self, "_age"):
+            return self._age
+        s = self.signal_matrix().astype(np.int32)
+        run = s.cumsum()
+        reset = run.where(s == 0).ffill().fillna(0)
+        self._age = (run - reset).astype(np.int32)
+        return self._age
 
     def features_at(self, i: int) -> pd.DataFrame:
         """Trait panel for every stock at session position i (data up to i only)."""
@@ -100,7 +150,9 @@ class Panel:
             # stock jumped > 60% in a single session in the trait window: suspect data
             bad_back = np.nanmax(1 + self.r1[max(0, i - 251):i + 1], 0) > JUMP_MAX
         df = pd.DataFrame({
-            "symbol": self.symbol.to_numpy(), "close": px, "turnover_cr": tv60 / 1e7,
+            "symbol": self.symbol.to_numpy(), "close": px, "price": self.c_raw[i],
+            "mcap_cr": self.mcap[i],
+            "turnover_cr": tv60 / 1e7,
             "n_hist": n_hist, "dd3y": px / hi3 - 1, "months_off_high": months_off,
             "width26": width26, "no_new_lows": q1min >= 0.98 * q0min,
             "ret1m": ret[21], "ret3m": ret[63], "ret6m": ret[126], "ret12m": ret[252],
@@ -115,7 +167,7 @@ class Panel:
             "tight10": rng10, "bad_back": bad_back,
         }, index=self.close.columns)
         elig = ((df["turnover_cr"] >= MIN_TURNOVER / 1e7) & (df["n_hist"] >= 260)
-                & (df["close"] >= 5) & ~df["symbol"].map(_is_fund).astype(bool)
+                & (df["price"] >= 5) & ~df["symbol"].map(_is_fund).astype(bool)
                 & ~df["bad_back"])
         df = df[elig].copy()
         # cross-sectional RS ratings (O'Neil style: percentile of 6m / 12m return)
@@ -164,7 +216,7 @@ def _is_fund(s) -> bool:
 # --------------------------------------------------------------------------- rules
 def current_screen(df: pd.DataFrame) -> pd.Series:
     """The pre-2026-10-31 next-bull watch rules (on adjusted prices)."""
-    return ((df["close"] <= 200) & (df["dd3y"] <= -0.55) & (df["months_off_high"] >= 10)
+    return ((df["price"] <= 200) & (df["dd3y"] <= -0.55) & (df["months_off_high"] >= 10)
             & (df["width26"] <= 0.45) & df["no_new_lows"] & (df["ret3m"] >= -0.10))
 
 
@@ -191,7 +243,7 @@ def leader(df: pd.DataFrame) -> pd.Series:
 def bagger_signal(df: pd.DataFrame) -> pd.Series:
     """BUY SIGNAL — cheap + full-market RS leader + turnover accelerating.
     Lifted >= 5x hit rates ~5x (2015-19) / ~3x (2020-24), every year 2016-24."""
-    return ((df["close"] <= SIG_PRICE) & (df["rs126"] >= SIG_RS)
+    return ((df["price"] <= SIG_PRICE) & (df["rs126"] >= SIG_RS)
             & (df["turnover_accel"] >= SIG_ACCEL))
 
 
@@ -202,7 +254,7 @@ def early_bull(df: pd.DataFrame) -> pd.Series:
 
 def warming(df: pd.DataFrame) -> pd.Series:
     """WATCH — cheap stocks whose RS and turnover are turning, one notch below signal."""
-    return ((df["close"] <= SIG_PRICE) & (df["rs126"] >= 75) & (df["turnover_accel"] >= 1.2)
+    return ((df["price"] <= SIG_PRICE) & (df["rs126"] >= 75) & (df["turnover_accel"] >= 1.2)
             & df["above50"] & ~bagger_signal(df))
 
 
@@ -224,8 +276,8 @@ RULES = {
 
 # single traits tested in isolation (bool masks)
 TRAITS = {
-    "price <= 200": lambda d: d["close"] <= 200,
-    "price <= 100": lambda d: d["close"] <= 100,
+    "price <= 200": lambda d: d["price"] <= 200,
+    "price <= 100": lambda d: d["price"] <= 100,
     "turnover 2-10cr (small)": lambda d: d["turnover_cr"] < 10,
     "dd3y <= -50%": lambda d: d["dd3y"] <= -0.50,
     "dd3y <= -70%": lambda d: d["dd3y"] <= -0.70,
@@ -346,6 +398,85 @@ def exit_study(panel: Panel, df: pd.DataFrame, rule) -> dict:
     return out
 
 
+AGE_POINTS = (1, 5, 10, 20, 40, 60)
+QUIET_BEFORE = 60
+
+
+def signal_age_study(panel: Panel) -> dict:
+    """Does a FRESH signal beat one that has already held for a while?
+
+    Event study on the daily signal: enter at the next close on every session where a
+    stock's signal age equals A (still on after A sessions), for each A in AGE_POINTS.
+    'first in 3m' = age 1 with no signal in the prior 60 sessions (no flicker re-entries).
+    Outcomes as elsewhere: 2y max multiple, plus realised hold-2y and trail-50% exits."""
+    age = panel.signal_age().to_numpy()
+    sig = age > 0
+    last_i = len(panel.dates) - HORIZON - 2
+    prior_on = (pd.DataFrame(sig).shift(1).rolling(QUIET_BEFORE, min_periods=1).max()
+                .fillna(0).to_numpy() > 0)
+    buckets = {f"age {a}": (age == a) for a in AGE_POINTS}
+    buckets["age 1, first in 3m"] = (age == 1) & ~prior_on
+    out = {}
+    for name, mask in buckets.items():
+        ii, jj = np.nonzero(mask[:last_i + 1])
+        rows = []
+        for i, j in zip(ii, jj):
+            path = panel.c[i + 1:i + 1 + HORIZON, j]
+            path = path[~np.isnan(path)]
+            if len(path) < 20:
+                continue
+            if np.nanmax(1 + panel.r1[i + 2:i + 1 + HORIZON, j]) > JUMP_MAX:
+                continue                              # suspect data, as in the main study
+            peak = np.maximum.accumulate(path)
+            hit = np.nonzero(path <= peak * 0.5)[0]
+            k = int(hit[0]) if len(hit) else len(path) - 1
+            rows.append((panel.dates[i], peak[-1] / path[0], path[-1] / path[0],
+                         path[k] / path[0], float(np.nanmax(path[:252]) / path[0])))
+        t = pd.DataFrame(rows, columns=["date", "max2y", "hold2y", "trail50", "max1y"])
+        out[name] = {}
+        for h, part in (("discovery 2015-19", t[t["date"] < SPLIT_DATE]),
+                        ("validation 2020-24", t[t["date"] >= SPLIT_DATE])):
+            if not len(part):
+                out[name][h] = {"n": 0}
+                continue
+            out[name][h] = {
+                "n": int(len(part)),
+                "hit5": round(100 * float((part["max2y"] >= 5).mean()), 2),
+                "hit10": round(100 * float((part["max2y"] >= 10).mean()), 2),
+                "hit2x_1y": round(100 * float((part["max1y"] >= 2).mean()), 1),
+                "med_max": round(float(part["max2y"].median()), 2),
+                "hold2y_mean": round(float(part["hold2y"].mean()), 2),
+                "hold2y_loss_pct": round(100 * float((part["hold2y"] < 1).mean()), 1),
+                "trail50_mean": round(float(part["trail50"].mean()), 2),
+            }
+    return out
+
+
+MCAP_RULES = {
+    "BAGGER SIGNAL": bagger_signal,
+    "BAGGER SIGNAL + RS>=95 (tier A)": lambda d: bagger_signal(d) & (d["rs126"] >= 95),
+    f"BAGGER SIGNAL + mcap <= {SMALL_CAP:,.0f} cr": lambda d: bagger_signal(d) & (d["mcap_cr"] <= SMALL_CAP),
+    f"BAGGER SIGNAL + mcap > {SMALL_CAP:,.0f} cr": lambda d: bagger_signal(d) & (d["mcap_cr"] > SMALL_CAP),
+    "BAGGER SIGNAL + tier A + small": lambda d: bagger_signal(d) & (d["rs126"] >= 95) & (d["mcap_cr"] <= SMALL_CAP),
+    "RS+turnover only, mcap <= 1,000 cr (no price rule)": lambda d: (d["rs126"] >= SIG_RS) & (d["turnover_accel"] >= SIG_ACCEL) & (d["mcap_cr"] <= 1000),
+    "RS+turnover only, mcap <= 2,000 cr (no price rule)": lambda d: (d["rs126"] >= SIG_RS) & (d["turnover_accel"] >= SIG_ACCEL) & (d["mcap_cr"] <= 2000),
+    "RS+turnover, price > 200 & mcap <= 2,000 cr": lambda d: (d["rs126"] >= SIG_RS) & (d["turnover_accel"] >= SIG_ACCEL) & (d["price"] > SIG_PRICE) & (d["mcap_cr"] <= 2000),
+    "trait: mcap <= 1,000 cr": lambda d: d["mcap_cr"] <= 1000,
+    "trait: price <= 200": lambda d: d["price"] <= SIG_PRICE,
+}
+
+
+def mcap_layer(halves: dict) -> dict:
+    """Size rules compared on the stock-dates whose market cap is known (delisted-before-2024
+    stocks have none, and they are mostly losers, so every rule here sees the same set)."""
+    out = {}
+    for h, d in halves.items():
+        k = d[d["mcap_cr"].notna()]
+        out[h] = {"coverage_pct": round(100 * len(k) / max(len(d), 1), 1),
+                  "rules": {r: _stats(k[f(k)], k) for r, f in MCAP_RULES.items()}}
+    return out
+
+
 def recall_table(df: pd.DataFrame) -> dict:
     """Of the names that DID go >= 10x, what share passed each rule beforehand?"""
     out = {}
@@ -391,7 +522,9 @@ def run() -> dict:
     out["exits"] = {h: exit_study(panel, v, bagger_signal) for h, v in halves.items()}
     gated = lambda d: bagger_signal(d) & (d["breadth_min6m"] < WASHOUT_6M)
     out["exits_gated"] = {h: exit_study(panel, v, gated) for h, v in halves.items()}
-    out["frozen_rule"] = {"price_max": SIG_PRICE, "rs126_min": SIG_RS,
+    out["signal_age"] = signal_age_study(panel)
+    out["mcap_layer"] = mcap_layer(halves)
+    out["frozen_rule"] = {"price_max": SIG_PRICE, "rs126_min": SIG_RS, "small_cap_cr": SMALL_CAP,
                           "turnover_accel_min": SIG_ACCEL, "washout_6m": WASHOUT_6M, "recovery_pp": 100 * RECOVERY}
 
     # every >= 10x episode once (first sample date it was visible), with its traits
@@ -442,6 +575,18 @@ def _write_md(out: dict) -> None:
                                           for h in out["recall_ge10x"]) + " |")
     L += ["", "## Robust traits (≥1.3x lift on ≥10x in BOTH halves, n ≥ 300)", "",
           ", ".join(out["robust_traits"]) or "none", ""]
+    L += ["## Market-cap layer (stocks whose market cap is known)", "",
+          "Market cap = adjusted close x NSE shares outstanding (monthly MCAP files since 2024, "
+          "restated to today's split/bonus basis and carried back). Before 2024 later share "
+          "issues make caps look too big; stocks delisted before 2024 have none, so every rule "
+          "below is measured on the same known-cap subset.", ""]
+    for h, e in out.get("mcap_layer", {}).items():
+        L += [f"### {h} · market cap known for {e['coverage_pct']}% of stock-dates", "",
+              "| rule | n | names/date | ≥5x % | ≥10x % | lift 10x |", "|---|---:|---:|---:|---:|---:|"]
+        for name, s in e["rules"].items():
+            L.append(f"| {name} | {s.get('n', 0):,} | {s.get('names_per_date', '')} | "
+                     f"{s.get('hit5', '')} | {s.get('hit10', '')} | {s.get('lift10', '')} |")
+        L.append("")
     L += ["## Exits — realised multiple of the first BAGGER SIGNAL per stock", "",
           "Entry next close; exit at the first close breaking the rule; 2-year cap "
           "(so a still-running winner is marked at its 2-year close).", ""]
@@ -457,6 +602,21 @@ def _write_md(out: dict) -> None:
             s = e[name]
             L.append(f"| {name} | {s['median_x']} | {s['mean_x']} | {s['loss_pct']} | "
                      f"{s['ge3x_pct']} | {s['ge5x_pct']} | {s['median_days']} |")
+        L.append("")
+    if out.get("signal_age"):
+        L += ["## Signal age — fresh trigger vs a signal that has already held", "",
+              "Event study on the daily signal: enter at the next close on every session a "
+              "stock's signal has held exactly A sessions. 'first in 3m' = age 1 with no signal "
+              f"in the prior {QUIET_BEFORE} sessions.", "",
+              "| entry at | half | n | ≥5x % | ≥10x % | 2x in 1y % | median max | hold 2y mean | "
+              "hold 2y losers % | trail 50% mean |",
+              "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
+        for name, halves_ in out["signal_age"].items():
+            for h, s in halves_.items():
+                if s.get("n"):
+                    L.append(f"| {name} | {h} | {s['n']:,} | {s['hit5']} | {s['hit10']} | "
+                             f"{s['hit2x_1y']} | {s['med_max']} | {s['hold2y_mean']} | "
+                             f"{s['hold2y_loss_pct']} | {s['trail50_mean']} |")
         L.append("")
     OUT_MD.parent.mkdir(parents=True, exist_ok=True)
     OUT_MD.write_text("\n".join(L), encoding="utf-8")
