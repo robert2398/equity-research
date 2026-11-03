@@ -12,7 +12,7 @@ const RANGES = ['6M', '1Y', '3Y', '5Y', 'ALL'];
 const pref = (k, dflt) => { try { return localStorage.getItem(`chart:${k}`) || dflt; } catch { return dflt; } };
 const savePref = (k, v) => { try { localStorage.setItem(`chart:${k}`, v); } catch { /* private mode */ } };
 
-export default function Detail({ bundle, focus, onOpen, asOf, clearAsOf }) {
+export default function Detail({ bundle, focus, onOpen, asOf, clearAsOf, back = null }) {
   const [symbol, setSymbol] = useState(focus || 'TECHM');
   const [input, setInput] = useState(focus || 'TECHM');
   const [data, setData] = useState(null);
@@ -63,9 +63,16 @@ export default function Detail({ bundle, focus, onOpen, asOf, clearAsOf }) {
     });
   }, [data, rsKeys, rsNorm]);
 
-  if (!data) return <div className="loading">loading {symbol}…</div>;
+  const backBar = back && (
+    <div style={{ marginBottom: 10 }}>
+      <button type="button" className="btn xs" onClick={back.onClick} title="back to the list (or Alt+←)">
+        ← Back to {back.label}</button>
+    </div>
+  );
+  if (!data) return <div>{backBar}<div className="loading">loading {symbol}…</div></div>;
   if (data.error) return (
     <div>
+      {backBar}
       <div className="controls">
         <input className="search" value={input} onChange={(e) => setInput(e.target.value)}
           placeholder="symbol e.g. TECHM" onKeyDown={(e) => e.key === 'Enter' && setSymbol(input.toUpperCase())} />
@@ -78,6 +85,7 @@ export default function Detail({ bundle, focus, onOpen, asOf, clearAsOf }) {
 
   return (
     <div>
+      {backBar}
       <h1>{data.symbol} <span className="mut small">· {data.sector}</span></h1>
       <div className="sub">
         {asOf && (

@@ -121,7 +121,7 @@ def run_replay(window_idx: int | None = None) -> Path:
     from data_access import DataAccess
     from market_state import (breadth_series, improvement_components, stress_flags,
                               market_confirmed, breadth_verdict)
-    from setups import SetupEngine, Candidate
+    from setups import Candidate, is_actionable, keep_setups, set_core, SetupEngine, v2
     from scanner.backtest.walkforward import _prepare_securities
 
     t_start = time.time()
@@ -349,9 +349,9 @@ def run_replay(window_idx: int | None = None) -> Path:
                     rs_ok, slope, excess60 = engine.rs_conditions(d)
                     h = engine.setup_h(d) if rs_ok else None
                     r = engine.setup_r(d) if rs_ok and bool(srow["recent_stress"]) else None
-                    if h is None and r is None:
+                    setups = keep_setups(h, r, cfg)
+                    if not setups:
                         continue
-                    setups = (["H"] if h else []) + (["R"] if r else [])
                     c = Candidate(symbol=sym, sector=sector_of.get(sym, "UNKNOWN"),
                                   setups=setups, excess60=excess60 if excess60 == excess60
                                   else v60.get(sym, float("nan")), rs_slope20=slope)
@@ -367,7 +367,8 @@ def run_replay(window_idx: int | None = None) -> Path:
                         c.entry_close = f["entry_close"]
                         c.score, c.score_components = engine.score(
                             c, pct60.get(sym, 0.0), pct20.get(sym, 0.0), f["volume_ratio"])
-                        if not entries_enabled:
+                        set_core(c)
+                        if not entries_enabled and v2(cfg)["breadth_gate_blocks"]:
                             c.suppress_reason = "BREADTH_BLOCKED"
                         triggered.append(c)
                     else:
@@ -380,6 +381,7 @@ def run_replay(window_idx: int | None = None) -> Path:
                             c.extension_atr = -wf.get("dist_to_pivot_atr", float("nan"))
                             c.score, c.score_components = engine.score(
                                 c, pct60.get(sym, 0.0), pct20.get(sym, 0.0), None)
+                            set_core(c)
                             c.provisional = True
                             prebreak.append(c)
                 except Exception:
@@ -394,7 +396,7 @@ def run_replay(window_idx: int | None = None) -> Path:
                          "pivot": c.pivot, "stop": c.stop, "entry_close": c.entry_close,
                          "stop_distance_pct": c.stop_distance_pct,
                          "volume_ratio": c.volume_ratio, "excess60": c.excess60,
-                         "suppress_reason": c.suppress_reason}
+                         "suppress_reason": c.suppress_reason, "core_score": round(c.core_score, 1)}
                 for lbl, k in horizons.items():
                     d_out[f"fwd_{lbl}"] = (float(n_arr[pos + k] / n_arr[pos] - 1.0)
                                            if pos + k < len(n_arr) and c.entry_close == c.entry_close
@@ -402,8 +404,7 @@ def run_replay(window_idx: int | None = None) -> Path:
                 return d_out
 
             actionable = [plain(c) for c in triggered
-                          if c.score >= threshold and c.score_components.get("sector") is not None
-                          and not c.suppress_reason]
+                          if is_actionable(c, cfg) and not c.suppress_reason]
             actionable.sort(key=lambda x: -x["score"])
             watch = [plain(c) for c in prebreak]
             watch.sort(key=lambda x: -x["score"])

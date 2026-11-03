@@ -5,7 +5,7 @@ import {
 import {
   fetchNextBullWatch, fetchDossier, fetchLedger, requestAiNote, requestAiBrief, fmtPct, fmtNum,
 } from '../api.js';
-import { DecideModal, STATUS_PILL } from '../components/LedgerDecide.jsx';
+import { DecideModal, LedgerButton, ledgerEpisode } from '../components/LedgerDecide.jsx';
 
 const PHASE_CLASS = {
   'EARLY BULL': 'IMPROVING', WASHOUT: 'WEAK_OR_MIXED', 'BROAD BULL': 'CONFIRMED', NEUTRAL: 'UNKNOWN',
@@ -417,24 +417,12 @@ export function DossierModal({ symbol, onClose, onOpenChart }) {
   );
 }
 
-/** Ledger status of a buy signal; click to record a decision in the Signal Ledger. */
-function LedgerButton({ entry, onClick }) {
-  if (!entry) return null;
-  if (entry.status === 'NEW') {
-    return <button type="button" className="btn xs" onClick={onClick}
-      title="record your decision on this signal in the Signal Ledger">+ Ledger</button>;
-  }
-  return <button type="button" className={`btn xs pill ${STATUS_PILL[entry.shown_status] || 'grey'}`}
-    style={{ border: 'none' }} onClick={onClick} title="in the Signal Ledger — click to update">
-    {entry.status.toLowerCase()}</button>;
-}
-
 function StockTable({ rows, onOpen, isSignal, aiMeta, notes, busy, onAi, onDossier, ledgerOf, onLedger }) {
   return (
     <div className="panel" style={{ overflowX: 'auto', marginTop: 8 }}>
       <table>
         <thead><tr>
-          <th>#</th><th>Symbol</th><th>Close ₹</th><th title="NSE shares outstanding x close">Mcap ₹cr</th><th>RS 6m</th><th>RS 12m</th>
+          <th>#</th><th title="Next Bull lab grade: A+ / A = take, B = wait for the bull clock, X = vetoed">Grade</th><th>Symbol</th><th>Close ₹</th><th title="NSE shares outstanding x close">Mcap ₹cr</th><th>RS 6m</th><th>RS 12m</th>
           <th>Turnover accel</th><th>Turnover ₹cr</th><th>Thrusts 63d</th><th>Off 3y high</th>
           <th>6M</th>{isSignal && <th title="consecutive sessions the buy signal has held">Signal age</th>}
           <th>Score</th><th>Research</th>
@@ -443,6 +431,7 @@ function StockTable({ rows, onOpen, isSignal, aiMeta, notes, busy, onAi, onDossi
           {rows.map((r, i) => (
             <tr key={r.symbol} onClick={() => onOpen(r.symbol)}>
               <td className="mut">{i + 1}</td>
+              <td><GradePill r={r} /></td>
               <td>
                 {r.symbol}{' '}
                 {r.tier === 'A' && <span className="pill hi" title="RS rank >= 95">A</span>}{' '}
@@ -475,10 +464,49 @@ function StockTable({ rows, onOpen, isSignal, aiMeta, notes, busy, onAi, onDossi
             </tr>
           ))}
           {!rows.length && (
-            <tr><td colSpan={14} className="mut">no names today (valid result)</td></tr>
+            <tr><td colSpan={15} className="mut">no names today (valid result)</td></tr>
           )}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+const GRADE_PILL = { 'A+': 'green', A: 'green', B: 'grey', X: 'red' };
+
+function GradePill({ r }) {
+  if (!r.grade) return <span className="mut">–</span>;
+  const tip = [
+    r.vetoes?.length ? `vetoes: ${r.vetoes.join(', ')}` : 'no veto',
+    r.boosters?.length ? `boosters: ${r.boosters.join(', ')}` : null,
+    r.has_fund ? `FY${r.fy}: sales ${r.sales_g != null ? fmtPct(r.sales_g, 0) : '–'} · promoter ${r.prom ?? '–'}%`
+      + `${r.prom_chg != null ? ` (${r.prom_chg >= 0 ? '+' : ''}${fmtNum(r.prom_chg, 1)}pp)` : ''} · institutions ${r.inst != null ? fmtNum(r.inst, 1) : '–'}%`
+      : 'no fundamentals on file',
+  ].filter(Boolean).join(' · ');
+  return <span className={`pill ${GRADE_PILL[r.grade] || 'grey'}`} title={tip}>{r.grade}</span>;
+}
+
+function Grading({ g }) {
+  if (!g) return null;
+  const cell = (e) => (e?.n ? `${e.n} trades · median ${fmtPct(e.median, 0)} · ${fmtPct(e.per_year_held, 0)}/yr held · 2x ${Math.round(e.hit2x * 100)}%` : '–');
+  return (
+    <div className="panel" style={{ marginTop: 10 }}>
+      <div className="small" style={{ marginBottom: 6 }}><b>Grade</b> (NEXT_BULL_LAB.md — every signal 2016–24 traded with the
+        50% trailing stop; hard vetoes failed in both 2016-19 and 2020-24)</div>
+      <table>
+        <thead><tr><th>Grade</th><th>Meaning</th><th>Lab result</th></tr></thead>
+        <tbody>
+          {['A+', 'A', 'B', 'X'].map((k) => (
+            <tr key={k}><td><span className={`pill ${GRADE_PILL[k]}`}>{k}</span></td><td>{g.notes[k]}</td>
+              <td className="small" title={Object.entries(g.evidence_halves?.[k] || {}).map(([h, e]) => `${h}: ${cell(e)}`).join('\n')}>
+                {cell(g.evidence?.[k])}</td></tr>
+          ))}
+          <tr><td className="mut">all</td><td className="mut">every signal, no grading</td><td className="small">{cell(g.evidence?.all)}</td></tr>
+        </tbody>
+      </table>
+      <div className="small" style={{ marginTop: 6 }}>Hard vetoes: {g.hard_vetoes.join(' · ')}. Soft (A+ only):
+        {' '}{g.soft_vetoes.join(' · ')}. Boosters: {g.boosters.join(' · ')}. Fundamentals: screener.in annual
+        reports public by the signal day. A+ beat A in 2020-24 but not in 2016-19 — treat it as "look first".</div>
     </div>
   );
 }
@@ -519,12 +547,7 @@ export default function NextBullWatch({ onOpen }) {
   const [ledger, setLedger] = useState(null);         // signal_ledger view
   const [decide, setDecide] = useState(null);         // ledger row being decided
   useEffect(() => { fetchLedger().then((v) => setLedger(v && !v.error ? v : null)); }, []);
-  // a signal's ledger episode: the one on today's list, else the newest live one
-  const ledgerOf = (symbol) => {
-    const rows = (ledger?.rows || []).filter((x) => x.symbol === symbol);
-    return rows.find((x) => x.on_list_today)
-      || rows.filter((x) => x.live).sort((a, b) => b.first_date.localeCompare(a.first_date))[0] || null;
-  };
+  const ledgerOf = (symbol) => ledgerEpisode(ledger, symbol);
 
   useEffect(() => {
     fetchNextBullWatch().then((d) => {
@@ -598,6 +621,7 @@ export default function NextBullWatch({ onOpen }) {
 
       <h2 style={{ marginTop: 18 }}>How the next-bull scan works</h2>
       <HowItWorks data={data} />
+      <Grading g={data.grading} />
 
       <h2 style={{ marginTop: 18 }}>Buy signals <span className="pill green">BAGGER SIGNAL</span></h2>
       <div className="small">{data.criteria.signal} · tier A = {data.criteria.tier_a}

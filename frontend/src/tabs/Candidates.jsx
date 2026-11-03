@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'react';
-import { fmtPct } from '../api.js';
+import React, { useEffect, useMemo, useState } from 'react';
+import { fetchLedger, fmtPct } from '../api.js';
+import { DecideModal, LedgerButton, ledgerEpisode } from '../components/LedgerDecide.jsx';
 
 const SCORE_COLORS = { leadership: '#4f8cff', base_quality: '#26a269', volume: '#f2a33c',
   entry_risk: '#c06ad8', sector: '#e0e6a8' };
@@ -14,6 +15,55 @@ function ScoreBar({ comps }) {
         <div key={k} style={{ width: `${(v / total) * 100}%`, background: SCORE_COLORS[k] || '#555' }} />
       ))}
     </span>
+  );
+}
+
+/** SME board: top 10% of SME stocks by 6-month return (sme_watch.py, tested in sme_lab.py). */
+function SmeMomentum({ sm, legacy, list, onOpen }) {
+  const [ledger, setLedger] = useState(null);         // signal_ledger view (SME episodes)
+  const [decide, setDecide] = useState(null);
+  useEffect(() => { fetchLedger().then((v) => setLedger(v && !v.error ? v : null)); }, []);
+  if (!sm) {
+    return (
+      <div className="panel" style={{ overflowX: 'auto' }}>
+        {(legacy || []).length ? list(legacy, 'sme')
+          : <span className="mut small">no SME candidates today (old rules — rerun run_daily.py for the momentum watch)</span>}
+      </div>);
+  }
+  return (
+    <div className="panel" style={{ overflowX: 'auto' }}>
+      <div className="small" style={{ marginBottom: 6 }}>{sm.rule} · {sm.eligible} eligible SME stocks</div>
+      <table>
+        <thead><tr>
+          <th>Symbol</th><th title="6-month return rank among eligible SME stocks">RS vs SME</th><th>6M</th>
+          <th>Close ₹</th><th title="median daily traded value, 60 sessions">Liquidity ₹cr</th>
+          <th title="20-day vs prior 120-day median traded value">Turnover accel</th><th>Off 52w high</th><th>&gt; 50-DMA</th>
+          <th title="track it in the Signal Ledger (tagged SME)">Ledger</th>
+        </tr></thead>
+        <tbody>
+          {(sm.names || []).map((n) => (
+            <tr key={n.symbol} onClick={() => onOpen(n.symbol)}>
+              <td>{n.symbol}</td><td><b>{Math.round(n.rs_sme)}</b></td>
+              <td className={n.ret6m >= 0 ? 'pos' : 'neg'}>{fmtPct(n.ret6m, 0)}</td>
+              <td>{n.close}</td><td>{n.turnover_cr}</td>
+              <td>{n.turnover_accel != null ? `${n.turnover_accel}x` : '–'}</td>
+              <td className="neg">{fmtPct(n.off_high, 0)}</td>
+              <td>{n.above_ma50 ? '✓' : '–'}</td>
+              <td onClick={(e) => e.stopPropagation()}>
+                {ledger && <LedgerButton entry={ledgerEpisode(ledger, n.symbol, 'sme')}
+                  onClick={() => setDecide(ledgerEpisode(ledger, n.symbol, 'sme'))} />}
+              </td>
+            </tr>
+          ))}
+          {!(sm.names || []).length && <tr><td colSpan={9} className="mut">no SME names today</td></tr>}
+        </tbody>
+      </table>
+      <div className="small" style={{ marginTop: 6 }}>{sm.note}</div>
+      {decide && ledger && (
+        <DecideModal row={decide} asOf={ledger.sme_as_of || ledger.as_of} onClose={() => setDecide(null)}
+          onSaved={(v) => { setLedger(v); setDecide(null); }} />
+      )}
+    </div>
   );
 }
 
@@ -36,30 +86,42 @@ export default function Candidates({ bundle, onOpen }) {
   const list = (rows, kind) => (
     <table>
       <thead><tr>
-        <th>Symbol</th><th>Sector</th><th>Setups</th><th>Score</th><th>Components</th>
-        <th>Pivot</th><th>Stop</th><th>Stop dist</th><th>Vol</th><th>XS60</th><th>Status</th>
+        <th>Symbol</th><th>Sector</th><th>Setups</th>
+        <th title="score without the sector component (max 85); full 0-100 score in brackets">Core /85</th><th>Components</th>
+        <th>Pivot</th><th>Stop</th><th>Stop dist</th><th>Vol</th><th>XS60</th>
+        {kind === 'actionable' ? <th title="breakout session · sessions ago · move since">Triggered</th>
+          : kind === 'watch' ? <th title="what a breakout must show to become actionable">Needs</th> : null}
+        <th>Status</th>
       </tr></thead>
       <tbody>
         {(rows || []).map((c) => (
           <tr key={kind + c.symbol} onClick={() => onOpen(c.symbol)}>
             <td>{c.symbol}</td><td>{c.sector}</td>
             <td>{(c.setups || []).join('+')}</td>
-            <td>{c.score}{c.provisional ? '*' : ''}</td>
+            <td><b>{c.core_score ?? '–'}</b>{c.provisional ? '*' : ''} <span className="mut small">({c.score})</span></td>
             <td><ScoreBar comps={c.components} /></td>
             <td>{c.pivot != null ? `₹${Number(c.pivot).toFixed(0)}` : '–'}</td>
             <td>{c.stop != null ? `₹${Number(c.stop).toFixed(0)}` : '–'}</td>
             <td>{fmtPct(c.stop_distance_pct)}</td>
             <td>{c.volume_ratio != null ? `${Number(c.volume_ratio).toFixed(1)}x` : '–'}</td>
             <td className={(c.excess60 ?? 0) >= 0 ? 'pos' : 'neg'}>{fmtPct(c.excess60)}</td>
+            {kind === 'actionable' && (
+              <td className="small">{c.trigger_date || '–'}
+                {c.age_sessions != null && <span className="mut"> · {c.age_sessions === 0 ? 'today' : `${c.age_sessions}d ago`}</span>}
+                {c.since_trigger != null && <span className={c.since_trigger >= 0 ? 'pos' : 'neg'}> · {c.since_trigger >= 0 ? '+' : ''}{fmtPct(c.since_trigger)}</span>}
+                {c.below_stop && <span className="pill amber" style={{ marginLeft: 4 }} title="closed below its structural stop since the breakout (V2 exits on the 50% trail; treat as weaker)">below stop</span>}
+              </td>)}
+            {kind === 'watch' && <td className="small">{c.needs || '–'}</td>}
             <td>
               {c.suppress_reason === 'BREADTH_BLOCKED'
                 ? <span className="pill amber">breadth-blocked</span>
                 : kind === 'actionable' ? <span className="pill green">actionable</span>
                 : <span className="pill grey">watch</span>}
+              {c.breadth_note && <span className="pill amber" title={c.breadth_note} style={{ marginLeft: 4 }}>gate closed</span>}
             </td>
           </tr>
         ))}
-        {(rows || []).length === 0 && <tr><td colSpan={11} className="mut">none — zero is a valid result</td></tr>}
+        {(rows || []).length === 0 && <tr><td colSpan={12} className="mut">none — zero is a valid result</td></tr>}
       </tbody>
     </table>
   );
@@ -68,23 +130,32 @@ export default function Candidates({ bundle, onOpen }) {
     <div>
       <h1>Candidates</h1>
       <div className="sub">
-        bear-reversal quality lists (frozen plan §5) + the 4-detector scanner shortlist ·
-        click any row for full detail · * = provisional score (volume points withheld)
+        bear-reversal lists (V2 rules since 1 Nov 2026, tested on the full market — reports/BEAR_LAB.md) +
+        the 4-detector scanner shortlist · click any row for full detail · * = provisional score
+        (volume points withheld)
       </div>
+      {cand.v2?.active && (
+        <div className="panel small" style={{ marginTop: 10, lineHeight: 1.5 }}>
+          <b>V2 rules:</b> setup R required (stock within 20% of its 52-week high after a market
+          stress period; H alone was the weakest group) · actionable = breakout in the last{' '}
+          {cand.v2.actionable_window || 1} sessions (entering by day 10 tested the same as day 1) with core score ≥{' '}
+          {cand.v2.core_threshold}/85 · breadth gate is context only (it did not improve results) —
+          now <b className={cand.entries_enabled ? 'pos' : 'neg'}>{cand.entries_enabled ? 'open' : 'closed'}</b> ·{' '}
+          <b>exit:</b> a close 50% below the highest close since entry (in the test, the tight
+          structural stop cut the median trade to −8% vs +13% to +40% with this exit)
+        </div>
+      )}
 
-      <h2>Bear-reversal — actionable (max 5, needs breadth gate + complete score ≥ 80)</h2>
+      <h2>Bear-reversal — actionable ({cand.v2?.active
+        ? `breakouts of the last ${cand.v2.actionable_window} sessions with core score ≥ ${cand.v2.core_threshold}/85`
+        : 'max 5, needs breadth gate + complete score ≥ 80'})</h2>
       <div className="panel" style={{ overflowX: 'auto' }}>{list(cand.actionable, 'actionable')}</div>
 
       <h2>Bear-reversal — watchlist (max 5, never entry-ready)</h2>
       <div className="panel" style={{ overflowX: 'auto' }}>{list(cand.watch, 'watch')}</div>
 
-      <h2>SME watch (relaxed ₹0.5cr liquidity — NEVER actionable, plan rule)</h2>
-      <div className="panel" style={{ overflowX: 'auto' }}>
-        {(cand.sme_watch || []).length ? list(cand.sme_watch, 'sme') : (
-          <span className="mut small">no SME candidates today — valid result (the RS-near-high gate
-            blocks candidates while breadth deteriorates; SME names appear in healthier weeks)</span>
-        )}
-      </div>
+      <h2>SME momentum watch <span className="pill amber">research only — never actionable</span></h2>
+      <SmeMomentum sm={cand.sme_momentum} legacy={cand.sme_watch} list={list} onOpen={onOpen} />
 
       <h2>Scanner setups (4 detectors, liquid universe)</h2>
       <div className="controls">

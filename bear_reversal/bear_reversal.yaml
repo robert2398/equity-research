@@ -98,6 +98,20 @@ score:                         # 0-100, actionable threshold 80
   stop_dist_ref: 0.08
   stop_dist_base: 0.12
 
+v2:                            # applied 2026-11-01 from the full-market test (bear_lab.py,
+                               # reports/BEAR_LAB.md); each change improved BOTH 2015-19 and 2020-24
+  require_setup_r: true        # setup H alone no longer lists a stock: H-only triggers were the
+                               # weakest group (3m excess vs N500 -3.3% / -1.7% median)
+  core_threshold: 60           # actionable = trigger with core score (score minus the sector
+                               # component, max 85) >= 60; the old 80-of-100 fired 2-5x in 10 years
+  breadth_gate_blocks: false   # the breadth gate is shown as context; gate-open triggers did no better
+  sector_required: false       # the sector component no longer blocks actionable (scored when available)
+  exit_trail: 0.50             # exit on a close 50% below the highest close since entry; the
+                               # structural stop cut the median trade to -8% / -7% vs +13% / +40%
+  actionable_window: 10        # a trigger stays actionable for 10 sessions: entering on day 10
+                               # tested the same as day 1 (median +21% vs +23% / +56% vs +55%)
+  max_actionable: 10           # room for a burst of triggers inside that window
+
 shortlist:                     # plan section 5 selective output
   max_actionable: 5
   max_watch: 5

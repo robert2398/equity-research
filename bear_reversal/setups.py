@@ -14,6 +14,53 @@ import pandas as pd
 from market_state import improvement_components, breadth_series
 
 
+# --------------------------------------------------------------------- V2 rules
+def v2(cfg: dict) -> dict:
+    """V2 rules (bear_reversal.yaml `v2:`); an absent block keeps the original plan rules."""
+    d = cfg.get("v2") or {}
+    return {"require_setup_r": bool(d.get("require_setup_r", False)),
+            "core_threshold": float(d.get("core_threshold", cfg["score"]["actionable_threshold"])),
+            "breadth_gate_blocks": bool(d.get("breadth_gate_blocks", True)),
+            "sector_required": bool(d.get("sector_required", True)),
+            "exit_trail": d.get("exit_trail"),
+            "actionable_window": int(d.get("actionable_window", 1)),
+            "max_actionable": d.get("max_actionable"),
+            "active": bool(d)}
+
+
+def keep_setups(h, r, cfg: dict) -> list[str]:
+    """Setup tags for a stock, or [] when it should not be listed."""
+    tags = (["H"] if h else []) + (["R"] if r else [])
+    if v2(cfg)["require_setup_r"] and not r:
+        return []
+    return tags
+
+
+def set_core(c) -> None:
+    c.core_score = float(c.score - (c.score_components.get("sector") or 0.0))
+
+
+def is_actionable(c, cfg: dict) -> bool:
+    """A fresh trigger meeting the score rule (V2: core score; otherwise the plan's 80)."""
+    rules = v2(cfg)
+    if c.state != "TRIGGERED":
+        return False
+    if rules["active"]:
+        if rules["sector_required"] and c.score_components.get("sector") is None:
+            return False
+        return c.core_score >= rules["core_threshold"]
+    return (c.score >= float(cfg["score"]["actionable_threshold"])
+            and c.score_components.get("sector") is not None)
+
+
+def exit_note(cfg: dict) -> str:
+    t = v2(cfg)["exit_trail"]
+    if not t:
+        return "exit: structural stop"
+    return (f"exit: a close {t:.0%} below the highest close since entry "
+            "(the structural stop is a risk reference, not the exit)")
+
+
 # --------------------------------------------------------------------- helpers
 def log_slope(series: pd.Series, n: int) -> float:
     """Log-linear regression slope over the last n points (per-session)."""
@@ -67,6 +114,13 @@ class Candidate:
     entry_close: float = float("nan")
     reasons: list[str] = field(default_factory=list)
     suppress_reason: str | None = None
+    core_score: float = 0.0                                # score without the sector component
+    breadth_note: str | None = None                        # V2: breadth gate as context only
+    trigger_date: str | None = None                        # session of the breakout
+    age_sessions: int = 0                                  # sessions since the breakout
+    since_trigger: float = float("nan")                    # close now / close on trigger day - 1
+    below_stop: bool = False                               # closed below the structural stop since
+    needs: str | None = None                               # watch: what a breakout must show
 
 
 class SetupEngine:
@@ -186,8 +240,10 @@ class SetupEngine:
                     and c.iloc[-1] > c.rolling(50).mean().iloc[-1])
 
     # ------------------------------------------------------------- entry trigger
-    def entry_trigger(self, df: pd.DataFrame, setup_h: dict | None) -> tuple[bool, dict]:
-        """Shared entry requirements at close t; returns (triggered, facts)."""
+    def entry_trigger(self, df: pd.DataFrame, setup_h: dict | None,
+                      check_stop: bool = True) -> tuple[bool, dict]:
+        """Shared entry requirements at close t; returns (triggered, facts).
+        check_stop=False skips the stop-distance test (a cheap pre-filter before setup H)."""
         e = self.cfg["entry"]
         n = len(df)
         high = df["high"].to_numpy(float)
@@ -234,6 +290,8 @@ class SetupEngine:
         if vr is None or vr < float(e["volume_ratio_min"]):
             return False, facts
 
+        if not check_stop:
+            return True, facts
         if setup_h is not None:
             stop = setup_h["low2"] - 0.5 * atr[t]
         else:
@@ -257,10 +315,22 @@ class SetupEngine:
         base_hi = high[t - b: t].max()
         base_lo = low[t - b: t].min()
         width = (base_hi - base_lo) / close[t - 1]
+        stop = float(base_lo - 0.5 * atr[t])
+        # a watch name would be entered on a close above the pivot, so its risk is measured
+        # from there (was left at 0, which showed 0.0% and gave full entry-risk points)
+        pc = df["close"].shift(1)
+        tr = pd.concat([df["high"] - df["low"], (df["high"] - pc).abs(),
+                        (df["low"] - pc).abs()], axis=1).max(axis=1).to_numpy(float)
+        tr5 = tr[t - int(e["contraction_fast"]): t].mean()
+        tr20 = tr[t - int(e["contraction_slow"]): t].mean()
         facts = {"pivot": float(base_hi), "base_width": float(width), "atr": float(atr[t]),
-                 "stop": float(base_lo - 0.5 * atr[t]), "entry_close": float(close[t])}
+                 "stop": stop, "entry_close": float(close[t]),
+                 "stop_distance_pct": float((base_hi - stop) / base_hi) if base_hi else float("nan"),
+                 "contraction_ratio": float(tr5 / tr20) if tr20 else float("nan")}
         if width > float(e["base_max_width"]):
             return False, facts
+        if facts["stop_distance_pct"] > float(self.cfg["score"]["stop_dist_base"]):
+            return False, facts                       # its breakout could never be actionable
         if not close[t] > df["close"].rolling(int(e["ma"])).mean().iloc[-1]:
             return False, facts
         dist = (base_hi - close[t]) / atr[t] if atr[t] else float("inf")

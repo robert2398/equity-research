@@ -8,14 +8,51 @@ export const STATUS_PILL = {
 
 export const signed = (v, d = 0) => (v == null ? '–' : `${v >= 0 ? '+' : ''}${fmtPct(v, d)}`);
 
+const GRADE_PILL = { 'A+': 'green', A: 'green', B: 'grey', X: 'red' };
+
+/** Next Bull grade of a main-board episode (signal_ledger._grade_episodes): sets its priority. */
+export function LedgerGrade({ r }) {
+  if (!r.grade) return null;
+  const tip = [
+    `grade ${r.grade} on ${r.grade_date} (bull clock ${r.grade_clock})`,
+    r.vetoes?.length ? `vetoes: ${r.vetoes.join(', ')}` : 'no veto',
+    r.boosters?.length ? `boosters: ${r.boosters.join(', ')}` : null,
+    r.has_fund ? null : 'no fundamentals on file — the fundamental vetoes could not be checked',
+  ].filter(Boolean).join(' · ');
+  return <span className={`pill ${GRADE_PILL[r.grade] || 'grey'}`} title={tip}>{r.grade}{!r.has_fund && '?'}</span>;
+}
+
 export function Tags({ r }) {
   return (
     <>
-      {r.tier_a && <span className="pill hi" title="RS rank >= 95">A</span>}{' '}
+      {r.sme &&<span className="pill amber" title="SME board — momentum watch, research only, never actionable">SME</span>}{' '}
+      {r.board === 'ipo' && (
+        <span className="pill green" title={`IPO buy signal, rule ${r.ipo_tier} (${r.ipo_board === 'SME' ? 'SME board' : 'main board'}) · listed ${r.listing_date} · listing gain ${fmtPct(r.listing_gain, 0)} · rank ${r.ipo_rank != null ? Math.round(r.ipo_rank) : '–'}/100 (smaller, calmer listings first; queued by it inside the group)`}>
+          IPO {r.ipo_tier}{r.ipo_rank != null && <> · {Math.round(r.ipo_rank)}</>}</span>)}{' '}
+      {r.tier_a && <span className="pill hi" title="RS rank >= 95 (info only; the grade sets the priority)">RS95</span>}{' '}
       {r.small && <span className="pill hi" title="market cap <= ₹1,000cr">S</span>}{' '}
       {r.new_this_week && <span className="pill green" title="first signal in the last 5 sessions">NEW</span>}
     </>
   );
+}
+
+/** A signal's ledger episode: the one on today's list, else the newest live one. */
+export function ledgerEpisode(ledger, symbol, board = 'main') {
+  const rows = (ledger?.rows || []).filter((x) => x.symbol === symbol && (x.board || 'main') === board);
+  return rows.find((x) => x.on_list_today)
+    || rows.filter((x) => x.live).sort((a, b) => b.first_date.localeCompare(a.first_date))[0] || null;
+}
+
+/** Ledger status of a listed signal; click to record a decision in the Signal Ledger. */
+export function LedgerButton({ entry, onClick }) {
+  if (!entry) return null;
+  if (entry.status === 'NEW') {
+    return <button type="button" className="btn xs" onClick={onClick}
+      title="record your decision on this signal in the Signal Ledger">+ Ledger</button>;
+  }
+  return <button type="button" className={`btn xs pill ${STATUS_PILL[entry.shown_status] || 'grey'}`}
+    style={{ border: 'none' }} onClick={onClick} title="in the Signal Ledger — click to update">
+    {entry.status.toLowerCase()}</button>;
 }
 
 export function OnList({ r }) {

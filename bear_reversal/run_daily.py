@@ -99,11 +99,11 @@ def main() -> int:
           f"{'ENABLED' if market['entries_enabled'] else 'WATCH-ONLY'} | "
           f"actionable {len(scan['actionable'])} | watch {len(scan['watch'])}")
     for c in scan["actionable"]:
-        print(f"  TOP   {c.symbol:12s} {'+'.join(c.setups):3s} score {c.score:5.1f} "
+        print(f"  TOP   {c.symbol:12s} {'+'.join(c.setups):3s} core {c.core_score:5.1f} "
               f"pivot {c.pivot:.1f} stop {c.stop:.1f} vol {c.volume_ratio:.1f}x")
     for c in scan["watch"]:
         print(f"  WATCH {c.symbol:12s} {'+'.join(c.setups):3s} score {c.score:5.1f}"
-              f"{' (provisional)' if c.provisional else ''}")
+              f"{' (provisional)' if c.provisional else ''}  needs: {c.needs or '-'}")
     print(f"report: {path}")
 
     # export the React-UI bundle (best effort — a UI failure never breaks the report)
@@ -117,11 +117,17 @@ def main() -> int:
                     "stop_distance_pct": c.stop_distance_pct,
                     "extension_atr": c.extension_atr, "volume_ratio": c.volume_ratio,
                     "excess60": c.excess60, "reasons": c.reasons,
-                    "suppress_reason": c.suppress_reason}
-        cands = {"as_of": str(as_of.date()),
+                    "suppress_reason": c.suppress_reason,
+                    "core_score": round(c.core_score, 1), "breadth_note": c.breadth_note,
+                    "trigger_date": c.trigger_date, "age_sessions": c.age_sessions,
+                    "since_trigger": c.since_trigger, "below_stop": c.below_stop,
+                    "needs": c.needs}
+        cands = {"as_of": str(as_of.date()), "v2": scan.get("v2"),
+                 "entries_enabled": bool(market["entries_enabled"]),
                  "actionable": [_plain(c) for c in scan["actionable"]],
                  "watch": [_plain(c) for c in scan["watch"]],
                  "sme_watch": [_plain(c) for c in scan.get("sme_watch", [])],
+                 "sme_momentum": scan.get("sme_momentum"),
                  "breadth_blocked": [_plain(c) for c in scan["breadth_blocked"]]}
         print("ui bundle ->", export(cands))
     except Exception as e:
@@ -149,6 +155,13 @@ def main() -> int:
               f"signals · {nbw['warming_total']} warming ({nbw['source']}) -> {p}")
     except Exception as e:
         print(f"next-bull watch skipped: {type(e).__name__}: {e}")
+    try:                                              # IPO scanner (uses today's bull clock)
+        from ipo_watch import run as _ipo
+        ipo = _ipo()
+        print(f"ipo watch: clock {ipo['clock']['phase']} · " +
+              " · ".join(f"{k} {v}" for k, v in ipo["counts"].items() if v))
+    except Exception as e:
+        print(f"ipo watch skipped: {type(e).__name__}: {e}")
     return 0
 
 

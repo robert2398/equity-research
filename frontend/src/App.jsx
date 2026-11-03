@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { fetchBundle } from './api.js';
 import Overview from './tabs/Overview.jsx';
 import Breadth from './tabs/Breadth.jsx';
@@ -12,16 +12,18 @@ import MoversBacktest from './tabs/MoversBacktest.jsx';
 import BigMovers from './tabs/BigMovers.jsx';
 import NextBullWatch from './tabs/NextBullWatch.jsx';
 import SignalLedger from './tabs/SignalLedger.jsx';
+import IpoWatch from './tabs/IpoWatch.jsx';
 
 const SECTIONS = [
   ['Live', [
-    ['overview', 'Overview'], ['nbull', 'Next Bull Watch'], ['ledger', 'Signal Ledger'], ['breadth', 'Market Breadth'], ['sectors', 'Sectors'],
+    ['overview', 'Overview'], ['nbull', 'Next Bull Watch'], ['ipo', 'IPO Watch'], ['ledger', 'Signal Ledger'], ['breadth', 'Market Breadth'], ['sectors', 'Sectors'],
     ['movers', 'Top Movers'], ['detail', 'Stock Detail'], ['candidates', 'Candidates'],
   ]],
   ['Backtest', [
     ['replay', 'Week View'], ['rotation', 'Sector Rotation'], ['bt_movers', 'Top Movers'], ['big_movers', 'Big Movers'],
   ]],
 ];
+const LABEL = Object.fromEntries(SECTIONS.flatMap(([, items]) => items));
 
 export default function App() {
   const [tab, setTab] = useState('overview');
@@ -29,6 +31,11 @@ export default function App() {
   const [error, setError] = useState(null);
   const [focus, setFocus] = useState(null);   // symbol chosen anywhere -> Detail
   const [asOf, setAsOf] = useState(null);     // replay week context for Detail
+  const [from, setFrom] = useState(null);     // list tab the chart was opened from (kept mounted)
+  const listScroll = useRef(0);
+  const restoreScroll = useRef(null);
+  const now = useRef({});
+  now.current = { tab, from };
 
   useEffect(() => {
     fetchBundle().then(setBundle).catch((e) => setError(e.message));
@@ -37,8 +44,57 @@ export default function App() {
   const openStock = (symbol, asof = null) => {
     setFocus(symbol);
     setAsOf(asof);
+    if (tab !== 'detail') {                   // from a list: remember it and add a history step
+      listScroll.current = window.scrollY;
+      setFrom(tab);
+      window.history.pushState({ chart: true }, '');
+    }
     setTab('detail');
+    window.scrollTo(0, 0);
   };
+
+  // back to the list exactly as it was (filters, expanded rows, scroll)
+  useEffect(() => {
+    if ('scrollRestoration' in window.history) window.history.scrollRestoration = 'manual';
+    const onPop = () => {
+      const { tab: t, from: f } = now.current;
+      if (t !== 'detail' || !f) return;
+      restoreScroll.current = listScroll.current;
+      setTab(f);
+      setFrom(null);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  useLayoutEffect(() => {
+    if (restoreScroll.current != null && tab !== 'detail') {
+      window.scrollTo(0, restoreScroll.current);
+      restoreScroll.current = null;
+    }
+  }, [tab]);
+  const goBack = () => window.history.back();    // -> popstate above (also the browser's Back)
+  const goTab = (id) => { setFrom(null); setTab(id); };
+
+  const page = (id) => {
+    switch (id) {
+      case 'nbull': return <NextBullWatch onOpen={openStock} />;
+      case 'ledger': return <SignalLedger onOpen={openStock} />;
+      case 'ipo': return <IpoWatch onOpen={openStock} />;
+      case 'overview': return <Overview bundle={bundle} onOpen={openStock} goTab={goTab} />;
+      case 'breadth': return <Breadth bundle={bundle} />;
+      case 'sectors': return <Sectors bundle={bundle} onOpen={openStock} />;
+      case 'movers': return <Movers bundle={bundle} onOpen={openStock} />;
+      case 'detail': return <Detail bundle={bundle} focus={focus} onOpen={openStock} asOf={asOf}
+        clearAsOf={() => setAsOf(null)} back={from ? { label: LABEL[from], onClick: goBack } : null} />;
+      case 'candidates': return <Candidates bundle={bundle} onOpen={openStock} />;
+      case 'replay': return <Replay onOpen={openStock} />;
+      case 'rotation': return <RotationBacktest onOpen={openStock} />;
+      case 'bt_movers': return <MoversBacktest onOpen={openStock} />;
+      case 'big_movers': return <BigMovers onOpen={openStock} />;
+      default: return null;
+    }
+  };
+  const mounted = tab === 'detail' && from ? [from, 'detail'] : [tab];
 
   if (error) return <div className="loading">{error}</div>;
   if (!bundle) return <div className="loading">loading bundle…</div>;
@@ -56,7 +112,7 @@ export default function App() {
               <div className="small" style={{ padding: '0 12px 4px', textTransform: 'uppercase',
                 letterSpacing: '0.6px', color: '#5f6b80' }}>{section}</div>
               {items.map(([id, label]) => (
-                <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>
+                <button key={id} className={tab === id ? 'active' : ''} onClick={() => goTab(id)}>
                   {label}
                 </button>
               ))}
@@ -68,18 +124,9 @@ export default function App() {
         </div>
       </aside>
       <main className="main">
-        {tab === 'nbull' && <NextBullWatch onOpen={openStock} />}
-        {tab === 'ledger' && <SignalLedger onOpen={openStock} />}
-        {tab === 'overview' && <Overview bundle={bundle} onOpen={openStock} goTab={setTab} />}
-        {tab === 'breadth' && <Breadth bundle={bundle} />}
-        {tab === 'sectors' && <Sectors bundle={bundle} onOpen={openStock} />}
-        {tab === 'movers' && <Movers bundle={bundle} onOpen={openStock} />}
-        {tab === 'detail' && <Detail bundle={bundle} focus={focus} onOpen={openStock} asOf={asOf} clearAsOf={() => setAsOf(null)} />}
-        {tab === 'candidates' && <Candidates bundle={bundle} onOpen={openStock} />}
-        {tab === 'replay' && <Replay onOpen={openStock} />}
-        {tab === 'rotation' && <RotationBacktest onOpen={openStock} />}
-        {tab === 'bt_movers' && <MoversBacktest onOpen={openStock} />}
-        {tab === 'big_movers' && <BigMovers onOpen={openStock} />}
+        {mounted.map((id) => (
+          <div key={id} style={id === tab ? undefined : { display: 'none' }}>{page(id)}</div>
+        ))}
       </main>
     </div>
   );

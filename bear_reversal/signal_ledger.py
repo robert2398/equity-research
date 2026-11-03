@@ -5,9 +5,23 @@ Why: the daily signal list flickers (median streak 3 sessions, 68% of names come
 not the day. An episode starts on the first signal after 60 quiet sessions and stays LIVE
 for 60 sessions after its last signal.
 
-Two files, so the daily run never touches your decisions:
+SME stocks get their own episodes (board "sme", ids "SME.<symbol>:<date>") from the SME
+momentum watch (sme_watch.py: RS rank vs SME peers >= 90). They are research only, never
+actionable, so they sort last (priority 7) and carry an SME tag.
+
+Main-board episodes queue by their Next Bull grade (nextbull_lab.grade, computed on the first
+signal, or today while on today's list): P1 A+, P2 A, P5 B (clock not ready), P6 X (hard veto).
+
+IPO buy signals (ipo_watch.py, board "ipo", ids "IPO.<symbol>:<signal date>") are one episode
+per IPO breakout that passed the IPO lab's rule on its signal date: priority 3 for rule A
+(SME board), 4 for rule B (main board < Rs 5,000 cr). On the common yardstick
+(setup_compare.py) both beat grades B and X, so they queue after A+ / A and before those.
+
+Files, so the daily run never touches your decisions:
   ui_data/signal_ledger_market.json   written by the daily run (write_market): episodes,
                                       tags, closes since the first signal
+  ui_data/signal_ledger_sme.json      the same for SME episodes (write_sme_market)
+  ui_data/signal_ledger_ipo.json      the same for IPO buy signals (write_ipo_market)
   state/signal_ledger.json            your decisions (status, note, buy/exit) + slot count,
                                       written only by the UI (set_entry / set_settings)
 
@@ -34,6 +48,10 @@ for p in (str(HERE), str(HERE.parent)):
         sys.path.insert(0, p)
 
 MARKET = HERE / "ui_data" / "signal_ledger_market.json"
+SME_MARKET = HERE / "ui_data" / "signal_ledger_sme.json"
+SME_PREFIX = "SME."
+IPO_MARKET = HERE / "ui_data" / "signal_ledger_ipo.json"
+IPO_PREFIX = "IPO."
 USER = HERE / "state" / "signal_ledger.json"
 QUIET = 60          # sessions without a signal before a new episode can start
 LIVE = 60           # an episode stays live this many sessions after its last signal
@@ -42,14 +60,36 @@ TRAIL = 0.50        # exit: close 50% below the highest close since entry (bagge
 DEFAULT_SLOTS = 20
 STATUSES = ("NEW", "RESEARCHING", "WAIT", "BOUGHT", "PASSED", "EXITED")
 OPEN = ("NEW", "RESEARCHING", "WAIT")
-# 10x-in-2y hit rate of each priority group in the bagger lab (2015-19 / 2020-24)
-PRIORITY = {1: ("small cap + tier A", "2.3% / 5.6%"), 2: ("small cap", "1.6% / 6.2%"),
-            3: ("tier A (RS ≥ 95)", "2.4% / 2.3%"), 4: ("other signals", "1.5% / 2.0%")}
+# Main-board episodes queue by their Next Bull grade (nextbull_lab.grade). Evidence: every signal
+# 2016-24 traded at the signal close, 50% trailing stop or 2 years (reports/NEXT_BULL_LAB.md):
+# median trade and share that doubled within 2y. The old small cap / tier A groups did not hold
+# trade by trade (P1 median -19%), so they are tags only now.
+PRIORITY = {1: ("grade A+", "median +45% · 58% doubled in 2y (112 trades)"),
+            2: ("grade A", "median +38% · 54% doubled in 2y (154 trades)"),
+            5: ("grade B — clock not ready, wait", "median −19% · 32% doubled in 2y (263 trades)"),
+            6: ("grade X — hard veto, skip", "median −10% · 39% doubled in 2y (522 trades)")}
+GRADE_PRIORITY = {"A+": 1, "A": 2, "B": 5, "X": 6}
+UNGRADED = 5         # grade could not be computed: wait, like B
+IPO_PRIORITY = {"A": 3, "B": 4}
+SME_PRIORITY = 7
+SME_RULE = {"priority": SME_PRIORITY,
+            "group": "momentum (RS vs SME peers ≥ 90) — research only, never actionable",
+            "hit2x": "34% / 20% doubled within a year (2023-24 / 2025-26)",
+            "note": "median trailing-stop trade still lost (-18% / -12%); SMEs trade in lots"}
+IPO_RULE = {"A": {"priority": 3, "group": "SME board breakout after a calm listing",
+                  "hit2x": "median +42% · 69% doubled in 2y (88 trades, gains concentrated in 2021-22)"},
+            "B": {"priority": 4, "group": "main board < ₹5,000cr breakout in an early bull",
+                  "hit2x": "median +19% · 54% doubled in 2y (37 trades, weaker evidence)"}}
 _lock = threading.Lock()
 
 
-def _priority(tier_a: bool, small: bool) -> int:
-    return 1 if tier_a and small else 2 if small else 3 if tier_a else 4
+def _priority(ep: dict) -> int:
+    board = ep.get("board", "main")
+    if board == "sme":
+        return SME_PRIORITY
+    if board == "ipo":
+        return IPO_PRIORITY.get(ep.get("ipo_tier"), IPO_PRIORITY["B"])
+    return GRADE_PRIORITY.get(ep.get("grade"), UNGRADED)
 
 
 def _r(x, nd=2):
@@ -71,59 +111,133 @@ def _episode_bounds(fires: np.ndarray) -> list[tuple[int, int]]:
     return out
 
 
-def write_market(panel, i: int | None = None) -> Path:
-    """Episodes from the panel's daily signal matrix, as of session i (default: last)."""
-    from bagger_lab import SMALL_CAP
-    sig = panel.signal_matrix()
-    i = len(panel.dates) - 1 if i is None else i
-    s = sig.to_numpy()[:i + 1]
-    rs = panel._rs126.to_numpy()[:i + 1]
+def _episodes(s, rs, c, c_raw, mcap, dates, cols, syms, i, board, small_cap) -> tuple[list, int]:
+    """Episodes from a session x stock signal array (rows up to session i). Returns the
+    episodes (with 'start' rebased to the first one) and that first session index."""
     lo = max(0, i - BACKFILL - QUIET)
     keep_from = i - BACKFILL
     user = _load_user()
     # older episodes you are still acting on stay listed (a holding can outlive a year)
     held = {(e.get("key"), e.get("first_date")) for e in user["entries"].values()
-            if e.get("status") in ("BOUGHT", "RESEARCHING", "WAIT")}
-    held_cols = {panel.close.columns.get_loc(k) for k, _ in held if k in panel.close.columns}
+            if e.get("status") in ("BOUGHT", "RESEARCHING", "WAIT") and e.get("board", "main") == board}
+    held_cols = {cols.get_loc(k) for k, _ in held if k in cols}
+    prefix = SME_PREFIX if board == "sme" else ""
+    main = board == "main"
     eps = []
     for j in sorted(set(np.flatnonzero(s[lo:].any(0))) | held_cols):
-        key = panel.close.columns[j]
-        sym = str(panel.symbol.iloc[j])
+        key = cols[j]
+        sym = str(syms[j])
         for b0, b1 in _episode_bounds(s[:, j]):
-            if b0 < keep_from and (key, str(panel.dates[b0].date())) not in held:
+            if b0 < keep_from and (key, str(dates[b0].date())) not in held:
                 continue
             seg = s[b0:b1 + 1, j]
             streaks = int(seg[0]) + int((np.diff(seg.astype(int)) == 1).sum())
             a_first, a_now = rs[b0, j] >= 95, rs[i, j] >= 95
-            m_first, m_now = float(panel.mcap[b0, j]), float(panel.mcap[i, j])
+            m_first = float(mcap[b0, j]) if main else None
+            m_now = float(mcap[i, j]) if main else None
             on_today = bool(s[i, j] and b1 == i)
             eps.append({
-                "id": f"{sym}:{panel.dates[b0].date()}", "symbol": sym, "key": key,
-                "first_date": str(panel.dates[b0].date()),
-                "first_price": _r(panel.c_raw[b0, j]), "first_mcap": _r(m_first, 0),
-                "first_tier_a": bool(a_first), "first_small": bool(m_first <= SMALL_CAP),
-                "last_on": str(panel.dates[b1].date()), "sessions_on": int(seg.sum()),
+                "id": f"{prefix}{sym}:{dates[b0].date()}", "symbol": sym, "key": key, "board": board,
+                "first_date": str(dates[b0].date()),
+                "first_price": _r(c_raw[b0, j]), "first_mcap": _r(m_first, 0),
+                "first_tier_a": bool(main and a_first),
+                "first_small": bool(main and m_first <= small_cap),
+                "last_on": str(dates[b1].date()), "sessions_on": int(seg.sum()),
                 "streaks": streaks, "on_list_today": on_today,
                 "sessions_since_last": int(i - b1), "live": bool(i - b1 <= LIVE),
-                "tier_a_now": bool(a_now), "small_now": bool(m_now <= SMALL_CAP),
+                "tier_a_now": bool(main and a_now), "small_now": bool(main and m_now <= small_cap),
                 "mcap_now": _r(m_now, 0), "rs_now": _r(rs[i, j], 1),
                 "start": int(b0),
-                "close": [_r(x) for x in panel.c[b0:i + 1, j]],
-                "raw": [_r(x) for x in panel.c_raw[b0:i + 1, j]],
+                "close": [_r(x) for x in c[b0:i + 1, j]],
+                "raw": [_r(x) for x in c_raw[b0:i + 1, j]],
             })
     first = min((e["start"] for e in eps), default=i)
     for e in eps:
         e["start"] -= first
-    out = {"as_of": str(panel.dates[i].date()),
-           "dates": [str(d.date()) for d in panel.dates[first:i + 1]],
-           "rules": {"quiet": QUIET, "live": LIVE, "trail": TRAIL, "small_cap_cr": SMALL_CAP,
-                     "priority": {str(k): {"group": g, "hit10": h} for k, (g, h) in PRIORITY.items()}},
-           "episodes": eps}
-    MARKET.parent.mkdir(parents=True, exist_ok=True)
-    tmp = MARKET.with_suffix(".tmp")
+    return eps, first
+
+
+def _write(path: Path, out: dict) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(out, separators=(",", ":")), encoding="utf-8")
-    os.replace(tmp, MARKET)
-    return MARKET
+    os.replace(tmp, path)
+    return path
+
+
+def _grade_episodes(panel, eps: list[dict], first: int, i: int) -> None:
+    """Next Bull grade (nextbull_lab.grade) on each main-board episode, in place: graded on
+    today's session while the name is on today's list, else on its first signal (the session
+    the lab graded). Fundamentals come from the JSON store as known on that day."""
+    import pandas as pd
+    from nextbull_lab import fund_features, grade
+    at = {e["id"]: i if e["on_list_today"] else e["start"] + first for e in eps}
+    parts = []
+    for k in sorted(set(at.values())):
+        mine = [e for e in eps if at[e["id"]] == k]
+        f = panel.features_at(k).reindex([e["key"] for e in mine])
+        f["symbol"] = [e["symbol"] for e in mine]
+        parts.append(f.assign(id=[e["id"] for e in mine], date=panel.dates[k],
+                              clock=panel.regime_at(k)["phase"]).reset_index(drop=True))
+    if not parts:
+        return
+    F = fund_features(pd.concat(parts, ignore_index=True))
+    G = grade(F, F["clock"])
+    by = {e["id"]: e for e in eps}
+    for r, g in zip(F.itertuples(), G.itertuples()):
+        by[r.id].update(grade=g.grade, vetoes=g.vetoes, boosters=g.boosters,
+                        grade_date=str(r.date.date()), grade_clock=r.clock, has_fund=bool(r.has_fund))
+
+
+def write_market(panel, i: int | None = None) -> Path:
+    """Episodes from the panel's daily signal matrix, as of session i (default: last)."""
+    from bagger_lab import SMALL_CAP
+    sig = panel.signal_matrix()
+    i = len(panel.dates) - 1 if i is None else i
+    eps, first = _episodes(sig.to_numpy()[:i + 1], panel._rs126.to_numpy()[:i + 1], panel.c,
+                           panel.c_raw, panel.mcap, panel.dates, panel.close.columns,
+                           panel.symbol.to_numpy(), i, "main", SMALL_CAP)
+    try:
+        _grade_episodes(panel, eps, first, i)
+    except Exception as e:                            # ungraded episodes queue as P5, never lost
+        print(f"ledger grades skipped: {type(e).__name__}: {e}")
+    return _write(MARKET, {
+        "as_of": str(panel.dates[i].date()),
+        "dates": [str(d.date()) for d in panel.dates[first:i + 1]],
+        "rules": {"quiet": QUIET, "live": LIVE, "trail": TRAIL, "small_cap_cr": SMALL_CAP,
+                  "priority": {str(k): {"group": g, "evidence": h} for k, (g, h) in PRIORITY.items()},
+                  "sme": SME_RULE},
+        "episodes": eps})
+
+
+def write_sme_market(as_of=None) -> Path:
+    """SME episodes from the SME momentum rule (sme_watch.signal_frame), as of a date."""
+    import pandas as pd
+    from sme_data import load
+    from sme_watch import signal_frame
+    w = load()
+    sig, rs = signal_frame(w)
+    dates, cols = sig.index, sig.columns
+    i = len(dates) - 1 if as_of is None else int(dates.searchsorted(pd.Timestamp(as_of), "right")) - 1
+    c = w["close"].reindex(columns=cols).to_numpy()
+    c_raw = w["close_raw"].reindex(index=dates, columns=cols).to_numpy()
+    eps, first = _episodes(sig.to_numpy()[:i + 1], rs.to_numpy()[:i + 1], c, c_raw, None, dates,
+                           cols, cols.to_numpy(), i, "sme", 0)
+    return _write(SME_MARKET, {
+        "as_of": str(dates[i].date()),
+        "dates": [str(d.date()) for d in dates[first:i + 1]],
+        "episodes": eps})
+
+
+def held_ids(board: str) -> set[str]:
+    """Episode ids of one board you are still acting on (kept listed past the backfill)."""
+    return {k for k, e in _load_user()["entries"].items()
+            if e.get("board", "main") == board and e.get("status") in ("BOUGHT", "RESEARCHING", "WAIT")}
+
+
+def write_ipo_market(as_of: str, dates: list[str], eps: list[dict]) -> Path:
+    """IPO buy-signal episodes, built by ipo_watch.ledger_episodes (one per breakout)."""
+    return _write(IPO_MARKET, {"as_of": as_of, "dates": dates, "episodes": eps})
 
 
 # --------------------------------------------------------------------------- user side
@@ -180,14 +294,19 @@ def set_entry(ep_id: str, patch: dict) -> dict:
     """Update your decision on one episode. Buying or exiting without a price fills in the
     latest close and date, which you can then edit."""
     patch = _clean_patch(patch)
-    m = _load_market()
-    ep = next((e for e in m["episodes"] if e["id"] == ep_id), None)
+    m, ep = None, None
+    for mk in _load_markets():
+        ep = next((e for e in mk["episodes"] if e["id"] == ep_id), None)
+        if ep is not None:
+            m = mk
+            break
     if ep is None:
         raise KeyError(f"unknown episode {ep_id}")
     with _lock:
         u = _load_user()
         e = u["entries"].setdefault(ep_id, {})
-        e.update(symbol=ep["symbol"], key=ep["key"], first_date=ep["first_date"])
+        e.update(symbol=ep["symbol"], key=ep["key"], first_date=ep["first_date"],
+                 board=ep.get("board", "main"))
         e.update(patch)
         last_px, today = ep["raw"][-1], m["as_of"]
         if e.get("status") == "BOUGHT":
@@ -219,10 +338,24 @@ def set_settings(patch: dict) -> dict:
 
 
 # --------------------------------------------------------------------------- merged view
-def _load_market() -> dict:
-    if not MARKET.exists():
+def _load_markets() -> list[dict]:
+    """Main-board market first, then SME, then IPO; each keeps its own dates."""
+    out = []
+    for board, p in (("main", MARKET), ("sme", SME_MARKET), ("ipo", IPO_MARKET)):
+        if p.exists():
+            out.append({**json.loads(p.read_text(encoding="utf-8")), "board": board})
+    if not out:
         raise FileNotFoundError("no ledger yet — produced by run_daily.py (next-bull watch)")
-    return json.loads(MARKET.read_text(encoding="utf-8"))
+    return out
+
+
+def _ffill(xs: list) -> np.ndarray:
+    """Closes with gaps (a thinly traded day) carried forward."""
+    a = np.array([np.nan if x is None else x for x in xs], float)
+    for k in range(1, len(a)):
+        if np.isnan(a[k]):
+            a[k] = a[k - 1]
+    return a
 
 
 def _position(ep: dict, dates: list[str], u: dict) -> dict:
@@ -230,8 +363,7 @@ def _position(ep: dict, dates: list[str], u: dict) -> dict:
     if not (u.get("buy_date") and u.get("buy_price")):
         return {}
     d0 = dates[ep["start"]:ep["start"] + len(ep["close"])]
-    close = np.array([np.nan if x is None else x for x in ep["close"]], float)
-    raw = np.array([np.nan if x is None else x for x in ep["raw"]], float)
+    close, raw = _ffill(ep["close"]), _ffill(ep["raw"])
     b = max(0, int(np.searchsorted(d0, u["buy_date"])))
     if b >= len(close):
         return {"pending": True}
@@ -253,42 +385,56 @@ def _position(ep: dict, dates: list[str], u: dict) -> dict:
 
 
 def view() -> dict:
-    m = _load_market()
+    markets = _load_markets()
+    m = markets[0]
     u = _load_user()
-    dates = m["dates"]
     rows = []
-    for ep in m["episodes"]:
-        ue = u["entries"].get(ep["id"], {})
-        status = ue.get("status", "NEW")
-        shown = "EXPIRED" if status in OPEN and not ep["live"] else status
-        a = ep["tier_a_now"] if ep["on_list_today"] else ep["first_tier_a"]
-        sm = ep["small_now"] if ep["on_list_today"] else ep["first_small"]
-        close = [x for x in ep["close"] if x is not None]
-        row = {k: v for k, v in ep.items() if k not in ("close", "raw", "start")}
-        row.update(status=status, shown_status=shown, note=ue.get("note", ""),
-                   buy_date=ue.get("buy_date"), buy_price=ue.get("buy_price"),
-                   exit_date=ue.get("exit_date"), exit_price=ue.get("exit_price"),
-                   tier_a=bool(a), small=bool(sm), priority=_priority(a, sm),
-                   last_price=ep["raw"][-1],
-                   ret_since_signal=_r(close[-1] / close[0] - 1, 4) if close else None,
-                   new_this_week=ep["first_date"] >= dates[max(0, len(dates) - 5)])
-        if status in ("BOUGHT", "EXITED"):
-            row["position"] = _position(ep, dates, ue)
-        rows.append(row)
+    for mk in markets:
+        dates = mk["dates"]
+        for ep in mk["episodes"]:
+            board = ep.get("board", "main")
+            ue = u["entries"].get(ep["id"], {})
+            status = ue.get("status", "NEW")
+            shown = "EXPIRED" if status in OPEN and not ep["live"] else status
+            a = ep["tier_a_now"] if ep["on_list_today"] else ep["first_tier_a"]
+            sm = ep["small_now"] if ep["on_list_today"] else ep["first_small"]
+            close = [x for x in ep["close"] if x is not None]
+            row = {k: v for k, v in ep.items() if k not in ("close", "raw", "start")}
+            pri = _priority(ep)
+            row.update(board=board, sme=board == "sme", status=status, shown_status=shown,
+                       note=ue.get("note", ""),
+                       buy_date=ue.get("buy_date"), buy_price=ue.get("buy_price"),
+                       exit_date=ue.get("exit_date"), exit_price=ue.get("exit_price"),
+                       tier_a=bool(a), small=bool(sm), priority=pri,
+                       last_price=next((x for x in reversed(ep["raw"]) if x is not None), None),
+                       ret_since_signal=_r(close[-1] / close[0] - 1, 4) if close else None,
+                       new_this_week=ep["first_date"] >= dates[max(0, len(dates) - 5)])
+            if status in ("BOUGHT", "EXITED"):
+                row["position"] = _position(ep, dates, ue)
+            rows.append(row)
     # queue order: priority group, then on today's list, then oldest first (it has waited longest)
-    rows.sort(key=lambda r: (r["priority"], not r["on_list_today"], r["first_date"]))
+    # IPO episodes rank inside their group by ipo_rank (small, calm listings first; ipo_lab.py)
+    rows.sort(key=lambda r: (r["priority"], not r["on_list_today"], -(r.get("ipo_rank") or 0),
+                             r["first_date"]))
     holdings = [r for r in rows if r["status"] == "BOUGHT"]
     queue = [r for r in rows if r["shown_status"] in OPEN]
     for n, r in enumerate(queue, 1):
         r["queue_rank"] = n
     slots = int(u.get("slots", DEFAULT_SLOTS))
-    return {"as_of": m["as_of"], "rules": m["rules"], "slots": slots,
+    rules = dict(m.get("rules") or {"quiet": QUIET, "live": LIVE, "trail": TRAIL})
+    rules.update(sme=SME_RULE, ipo=IPO_RULE,
+                 priority={str(k): {"group": g, "evidence": h} for k, (g, h) in PRIORITY.items()})
+    as_of = {x["board"]: x["as_of"] for x in markets}
+    return {"as_of": m["as_of"], "sme_as_of": as_of.get("sme"), "ipo_as_of": as_of.get("ipo"),
+            "rules": rules, "slots": slots,
             "used": len(holdings), "free": max(0, slots - len(holdings)),
             "counts": {"queue": len(queue), "holdings": len(holdings),
                        "stop_alerts": sum(1 for r in holdings
                                           if (r.get("position") or {}).get("stop_hit")),
                        "new_this_week": sum(1 for r in rows if r["new_this_week"]),
                        "on_list_today": sum(1 for r in rows if r["on_list_today"]),
+                       "sme": sum(1 for r in rows if r["sme"]),
+                       "ipo": sum(1 for r in rows if r["board"] == "ipo"),
                        "episodes": len(rows)},
             "rows": rows}
 
@@ -297,12 +443,13 @@ if __name__ == "__main__":
     from bagger_data import load
     from bagger_lab import Panel
     write_market(Panel(load()))
+    write_sme_market()
     v = view()
     c = v["counts"]
     print(f"as of {v['as_of']}: {c['episodes']} episodes in the last year · {c['on_list_today']} "
           f"on today's list · queue {c['queue']} · new this week {c['new_this_week']} · "
           f"slots {v['used']}/{v['slots']}")
     for r in [r for r in v["rows"] if r["shown_status"] in OPEN][:15]:
-        print(f"  P{r['priority']} {r['symbol']:12s} first {r['first_date']} Rs{r['first_price']}"
+        print(f"  P{r['priority']} {r['symbol'] + (' [SME]' if r['sme'] else ''):18s} first {r['first_date']} Rs{r['first_price']}"
               f"  on {r['sessions_on']}d/{r['streaks']}x  {'TODAY' if r['on_list_today'] else 'off ' + str(r['sessions_since_last']) + 'd':>8s}"
               f"  since signal {100 * (r['ret_since_signal'] or 0):+.0f}%")

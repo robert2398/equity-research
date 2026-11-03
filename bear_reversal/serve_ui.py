@@ -16,6 +16,7 @@ Serves:
   POST /api/ai-brief      -> on-demand AI market/regime brief
   /api/dossier/<SYM>      -> research dossier for a Next Bull name: signal facts + research
                              checklist + Markdown (research_dossier.py; no LLM)
+  /api/ipo-watch          -> IPO scanner: first-year IPOs, bases, buy signals (ipo_watch.py)
   /api/ledger             -> signal ledger: episodes + your decisions (signal_ledger.py)
   POST /api/ledger/<ID>   -> save your decision on one episode (JSON body: status, note,
                              buy_date, buy_price, exit_date, exit_price)
@@ -94,15 +95,28 @@ def _panel_candles(symbol: str) -> pd.DataFrame | None:
         _cache["keys"] = dict(zip(k["symbol"].astype(str).str.upper(), k["key"]))
         _cache["keys_stamp"] = stamp
     key = _cache["keys"].get(symbol.upper())
-    if key is None:
-        return None
-    cols = {f: pd.read_parquet(CACHE / f"{f}.parquet", columns=[key])[key]
+    src = CACHE
+    if key is None:                                   # SME board (sme_data.py, columns = symbols)
+        from sme_data import CACHE as SME_CACHE
+        sp = SME_CACHE / "close.parquet"
+        if not sp.exists():
+            return None
+        if "sme_cols" not in _cache:
+            import pyarrow.parquet as pq
+            _cache["sme_cols"] = set(pq.read_schema(sp).names)
+        if symbol.upper() not in _cache["sme_cols"]:
+            return None
+        key, src = symbol.upper(), SME_CACHE
+    cols = {f: pd.read_parquet(src / f"{f}.parquet", columns=[key])[key]
             for f in ("open", "high", "low", "close", "turnover")}
     df = pd.DataFrame(cols).dropna(subset=["close"])
     for f in ("open", "high", "low"):
         df[f] = df[f].fillna(df["close"])
     df["volume"] = (df["turnover"] / df["close"]).fillna(0)
-    return df.rename_axis("date").reset_index()
+    df = df.rename_axis("date").reset_index()
+    df.attrs["source"] = ("SME panel (split/bonus-adjusted)" if src != CACHE
+                          else "full-market panel (split-adjusted)")
+    return df
 
 
 def _kite_candles(symbol: str) -> pd.DataFrame | None:
@@ -193,7 +207,8 @@ def stock_payload(symbol: str, asof: str | None = None, tf: str = "D") -> dict |
     """Candles + MAs (daily, or weekly bars ending Friday) for the whole history since 2014,
     plus RS vs benchmarks. The full-market panel first; the Kite store as a fallback."""
     tf = "W" if str(tf).upper().startswith("W") else "D"
-    df, source = _panel_candles(symbol), "full-market panel (split-adjusted)"
+    df = _panel_candles(symbol)
+    source = df.attrs.get("source", "full-market panel (split-adjusted)") if df is not None else None
     if df is None or not len(df):
         df, source = _kite_candles(symbol), "kite store"
     if df is None or not len(df):
@@ -305,7 +320,7 @@ class Handler(BaseHTTPRequestHandler):
         import urllib.parse as _up
         parsed = _up.urlparse(self.path)
         path = urllib.parse.unquote(parsed.path)
-        ml = re.match(r"^/api/ledger/([A-Za-z0-9&\-_.]{1,20}:\d{4}-\d{2}-\d{2})$", path)
+        ml = re.match(r"^/api/ledger/([A-Za-z0-9&\-_.]{1,30}:\d{4}-\d{2}-\d{2})$", path)
         if ml or path == "/api/ledger-settings":
             import signal_ledger
             try:
@@ -367,6 +382,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(watch)
             else:
                 self._json({"error": "no watch — produced by run_daily.py"}, 404)
+            return
+        if path == "/api/ipo-watch":                  # IPO scanner (ipo_watch.py) — no LLM
+            p = UI_DATA / "ipo_watch.json"
+            self._send(200, p.read_bytes(), "application/json") if p.exists() \
+                else self._json({"error": "no IPO watch — run python bear_reversal/ipo_watch.py"}, 404)
             return
         if path == "/api/ledger":                     # signal ledger — no LLM, no cost
             import signal_ledger

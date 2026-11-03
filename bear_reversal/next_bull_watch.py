@@ -41,7 +41,8 @@ LAB_JSON = HERE / "ui_data" / "bagger_lab.json"
 
 ROW_COLS = ["symbol", "close", "price", "mcap_cr", "rs126", "rs252", "turnover_cr", "turnover_accel",
             "thrust_count_63d", "deliv_ratio", "dd3y", "near52", "off_low52", "ret6m",
-            "above200", "hi52_break_20d"]
+            "above200", "hi52_break_20d", "tight10", "ret1m"]
+FUND_MAX_AGE = 120           # days: refresh a listed name's screener fundamentals after this
 
 PHASE_NOTE = {
     "WASHOUT": "market sold out (< 35% of stocks above 200-DMA within 6 months), not yet "
@@ -63,7 +64,31 @@ def _score(df: pd.DataFrame) -> pd.Series:
             + 2 * df["thrust_count_63d"].clip(0, 3)).round(1)
 
 
-def _rows(df: pd.DataFrame, days_on: pd.Series | None = None) -> list[dict]:
+def _graded(df: pd.DataFrame, when, phase: str) -> pd.DataFrame:
+    """Fundamentals known today + the Next Bull lab's grade (nextbull_lab.grade): A+ / A / B / X.
+    Screener pages are fetched only for listed names missing from the store or older than
+    FUND_MAX_AGE days (~3 s each, cached as JSON)."""
+    from nextbull_lab import fund_features, grade
+    from screener_fund import HEADERS, fetch
+    import httpx
+    try:
+        with httpx.Client(headers=HEADERS, timeout=30, follow_redirects=True) as c:
+            for sym in df["symbol"].astype(str).unique():
+                try:
+                    fetch(sym, c, max_age_days=FUND_MAX_AGE)
+                except Exception as e:                # a fundamentals gap never blocks the screen
+                    print(f"  fundamentals skipped for {sym}: {type(e).__name__}: {e}")
+    except Exception as e:
+        print(f"  fundamentals refresh skipped: {type(e).__name__}: {e}")
+    X = df.assign(date=pd.Timestamp(when)).reset_index(names="key")
+    F = fund_features(X).set_index("key")
+    G = grade(F, phase)
+    keep = ["has_fund", "fy", "sales_g", "np", "opm", "roce", "de", "prom", "prom_chg", "inst", "pe", "ps",
+            "cfo3_neg"]
+    return pd.concat([F[[k for k in keep if k in F]], G], axis=1)
+
+
+def _rows(df: pd.DataFrame, days_on: pd.Series | None = None, graded: pd.DataFrame | None = None) -> list[dict]:
     out = df[ROW_COLS].copy()
     out["score"] = _score(df)
     out["tier"] = np.where(df["rs126"] >= 95, "A", "B")
@@ -72,7 +97,14 @@ def _rows(df: pd.DataFrame, days_on: pd.Series | None = None) -> list[dict]:
     out["small"] = (df["mcap_cr"] <= SMALL_CAP).to_numpy()
     if days_on is not None:
         out["days_on"] = days_on.reindex(out.index).fillna(1).astype(int)
-    out = out.sort_values("score", ascending=False)
+    if graded is not None:
+        g = graded.reindex(out.index)
+        out = pd.concat([out, g.drop(columns=["vetoes", "boosters"])], axis=1)
+        out["vetoes"], out["boosters"] = g["vetoes"], g["boosters"]
+        out["_g"] = out["grade"].map({"A+": 0, "A": 1, "B": 2, "X": 3}).fillna(4)
+        out = out.sort_values(["_g", "score"], ascending=[True, False]).drop(columns="_g")
+    else:
+        out = out.sort_values("score", ascending=False)
     return json.loads(out.round(3).to_json(orient="records"))
 
 
@@ -99,6 +131,22 @@ def _backtest_summary() -> dict | None:
             "exits_gated": exits, "frozen_rule": lab.get("frozen_rule")}
 
 
+def _grading_summary() -> dict | None:
+    """The grade rules and their lab evidence (nextbull_lab.py) for the UI."""
+    p = HERE / "ui_data" / "nextbull_lab.json"
+    if not p.exists():
+        return None
+    from nextbull_lab import BOOSTERS, GRADE_NOTE, HARD_VETOES, SOFT_VETOES
+    lab = json.loads(p.read_text(encoding="utf-8"))
+    ref = lab.get("refined", {})
+    names = {"A+": "grade A+ only", "A": "grade A (not A+)", "B": "grade B (no veto, clock not ready)",
+             "X": "grade X (hard veto)", "all": "BAGGER SIGNAL (all)"}
+    ev = {k: (ref.get(v) or {}).get("all") for k, v in names.items()}
+    ev_halves = {k: {h: (ref.get(v) or {}).get(h) for h in ("2016-19", "2020-24")} for k, v in names.items()}
+    return {"notes": GRADE_NOTE, "hard_vetoes": list(HARD_VETOES), "soft_vetoes": list(SOFT_VETOES),
+            "boosters": list(BOOSTERS), "evidence": ev, "evidence_halves": ev_halves}
+
+
 def run(max_names: int = 40) -> dict:
     from bagger_data import load
     from bagger_lab import Panel, bagger_signal, warming
@@ -117,14 +165,20 @@ def run(max_names: int = 40) -> dict:
     regime["history"] = {"dates": [d.strftime("%Y-%m-%d") for d in hist.index[::5]],
                          "breadth200": [round(float(v), 3) for v in hist.iloc[::5]]}
 
-    try:                                              # episode ledger (signal_ledger.py)
-        from signal_ledger import write_market
+    graded = None
+    try:                                              # Next Bull lab grade (nextbull_lab.py)
+        listed = feats[sig | warming(feats)]
+        graded = _graded(listed, panel.dates[i], regime["phase"])
+    except Exception as e:
+        print(f"next-bull grade skipped: {type(e).__name__}: {e}")
+
+    try:                                              # episode ledger (signal_ledger.py), after the
+        from signal_ledger import write_market        # refresh above so it grades on fresh fundamentals
         write_market(panel, i)
     except Exception as e:
         print(f"signal ledger skipped: {type(e).__name__}: {e}")
-
-    signals = _rows(feats[sig], held)[:max_names]
-    warm = _rows(feats[warming(feats)])[:max_names]
+    signals = _rows(feats[sig], held, graded)[:max_names]
+    warm = _rows(feats[warming(feats)], None, graded)[:max_names]
 
     # research-dossier facts for every listed name (no LLM; research_dossier.py)
     from research_dossier import facts
@@ -152,6 +206,7 @@ def run(max_names: int = 40) -> dict:
             "signals": signals, "signals_total": int(sig.sum()),
             "warming": warm, "warming_total": int(warming(feats).sum()),
             "backtest": _backtest_summary(),
+            "grading": _grading_summary(),
             # kept for older consumers of next_bull_watch.json
             "watch": signals}
 

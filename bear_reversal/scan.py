@@ -11,7 +11,7 @@ import pandas as pd
 
 from data_access import DataAccess
 from market_state import improvement_components, breadth_series
-from setups import SetupEngine, Candidate, atr14
+from setups import atr14, Candidate, exit_note, is_actionable, keep_setups, set_core, SetupEngine, v2
 
 
 def _sector_support(dao: DataAccess, bench_close: pd.Series, cfg: dict):
@@ -61,11 +61,107 @@ def _ret60_ret20(df: pd.DataFrame, bench_close: pd.Series) -> tuple[float, float
     return float(e60), float(e20)
 
 
+def _fill_trigger(c: Candidate, f: dict, engine: SetupEngine, cfg: dict, p60: float,
+                  p20: float) -> None:
+    c.state = "TRIGGERED"
+    c.pivot, c.stop = f["pivot"], f["stop"]
+    c.stop_distance_pct = f["stop_distance_pct"]
+    c.extension_atr = f["extension_atr"]
+    c.volume_ratio = f["volume_ratio"]
+    c.base_width = f.get("base_width", float("nan"))
+    c.contraction_ratio = f.get("contraction_ratio", float("nan"))
+    c.entry_close = f["entry_close"]
+    c.score, c.score_components = engine.score(c, p60, p20, f["volume_ratio"])
+    set_core(c)
+    c.reasons = [f"close above pivot {f['pivot']:.1f} "
+                 f"({f['extension_atr']:.2f} ATR up, volume {f['volume_ratio']:.1f}x)",
+                 f"structural stop {f['stop']:.1f} ({f['stop_distance_pct']:.1%} away)",
+                 exit_note(cfg)]
+
+
+def _recent_triggers(engine: SetupEngine, eligible: dict, bench_close: pd.Series, market: dict,
+                     cfg: dict, skip: set[str], sme_syms: set[str], sector_of: dict) -> list[Candidate]:
+    """Breakouts on the previous (window - 1) sessions, each judged on the data of its own
+    day (RS, setups, score); the most recent trigger per stock wins."""
+    window = v2(cfg)["actionable_window"]
+    sessions = bench_close.index[bench_close.index <= pd.Timestamp(market["as_of"])]
+    if window <= 1 or len(sessions) < window:
+        return []
+    stress = market["stress"]["recent_stress"]
+    out, seen = [], set(skip)
+    today = sessions[-1]
+    for age, d in enumerate(reversed(sessions[-window:-1]), start=1):
+        bench_d = bench_close[bench_close.index <= d]
+        engine_bench = engine.bench_close
+        engine.bench_close = bench_d                      # RS on data up to that day
+        try:
+            sub = {s: x[x["date"] <= d] for s, x in eligible.items()}
+            sub = {s: x for s, x in sub.items() if len(x) > 260 and x["date"].iloc[-1] == d}
+            st = {s: _ret60_ret20(x, bench_d) for s, x in sub.items()}
+            e60 = pd.Series({s: v[0] for s, v in st.items()}).dropna()
+            e20 = pd.Series({s: v[1] for s, v in st.items()}).dropna()
+            p60 = e60.rank(pct=True).to_dict() if len(e60) else {}
+            p20 = e20.rank(pct=True).to_dict() if len(e20) else {}
+            rstress = bool(stress.reindex([d]).fillna(False).iloc[0])
+            for sym, x in sub.items():
+                if sym in seen:
+                    continue
+                pre, _ = engine.entry_trigger(x, None, check_stop=False)
+                if not pre:
+                    continue
+                rs_ok, slope, excess60 = engine.rs_conditions(x)
+                if not rs_ok:
+                    continue
+                h = engine.setup_h(x)
+                r = engine.setup_r(x) if rstress else None
+                setups = keep_setups(h, r, cfg)
+                if not setups:
+                    continue
+                trig, f = engine.entry_trigger(x, h)
+                if not trig:
+                    continue
+                c = Candidate(symbol=sym, sector="SME" if sym in sme_syms else sector_of.get(sym, "UNKNOWN"),
+                              setups=setups, excess60=excess60, rs_slope20=slope)
+                _fill_trigger(c, f, engine, cfg, p60.get(sym, 0.0), p20.get(sym, 0.0))
+                full = eligible[sym]
+                now = float(full["close"].iloc[-1])
+                after = full[(full["date"] > d) & (full["date"] <= today)]["close"]
+                c.trigger_date, c.age_sessions = str(d.date()), age
+                c.since_trigger = now / f["entry_close"] - 1.0
+                c.below_stop = bool(len(after) and (after < f["stop"]).any())
+                c.reasons.insert(0, f"triggered {c.trigger_date} ({age} session{'s' if age > 1 else ''} ago), "
+                                    f"{c.since_trigger:+.1%} since")
+                out.append(c)
+                seen.add(sym)
+        finally:
+            engine.bench_close = engine_bench
+    return out
+
+
+def _needs(c: Candidate, engine: SetupEngine, cfg: dict, p60: float, p20: float) -> str:
+    """What a breakout must show for this watch name to become actionable (core >= threshold):
+    the score at a 0.3-ATR breakout with no volume points, then the volume ratio that closes the gap."""
+    rules = v2(cfg)
+    probe = Candidate(symbol=c.symbol, sector=c.sector, base_width=c.base_width,
+                      contraction_ratio=c.contraction_ratio, stop_distance_pct=c.stop_distance_pct,
+                      extension_atr=0.3)
+    score, comps = engine.score(probe, p60, p20, 1.0)
+    base = score - (comps.get("sector") or 0.0)
+    gap = rules["core_threshold"] - base
+    vmin = float(cfg["entry"]["volume_ratio_min"])
+    w = float(cfg["score"]["w_volume"])
+    if gap > w:
+        return f"can't reach {rules['core_threshold']:.0f} yet (best case ~{base + w:.0f})"
+    vr = max(vmin, 1.0 + max(gap, 0.0) / w)
+    return f"close > ₹{c.pivot:,.1f} on ≥ {vr:.1f}x volume"
+
+
 def _select(cands: list[Candidate], returns: dict[str, pd.Series], cfg: dict,
             exclude: set[str], log: list[str]) -> list[Candidate]:
     """Greedy selection: score -> excess60 -> lower extension -> symbol, with
     sector caps (<=2) and correlation suppression (>0.85 over 60 sessions)."""
     sl = cfg["shortlist"]
+    cap = int(v2(cfg).get("max_actionable") or sl["max_actionable"])
     order = sorted(cands, key=lambda c: (-c.score,
                                          -(c.excess60 if c.excess60 == c.excess60 else -9e9),
                                          c.extension_atr if c.extension_atr == c.extension_atr else 9e9,
@@ -73,7 +169,7 @@ def _select(cands: list[Candidate], returns: dict[str, pd.Series], cfg: dict,
     picked: list[Candidate] = []
     sector_count: dict[str, int] = {}
     for c in order:
-        if len(picked) >= int(sl["max_actionable"]):
+        if len(picked) >= cap:
             break
         if c.symbol in exclude:
             continue
@@ -154,66 +250,34 @@ def run_scan(dao: DataAccess, market: dict) -> dict:
 
     # ---- SME-board cohort from the bhavcopy panel (same engine, sector=SME).
     # Plan rules: SME listings are excluded from NEW ENTRIES -> they can only be
-    # WATCH, never actionable (also enforced by the incomplete sector score).
-    # The main list keeps the Rs-2cr gate; a separate labelled sme_watch uses a
-    # relaxed Rs-0.5cr visibility gate, outside the 5 actionable + 5 watch contract.
+    # WATCH, never actionable (enforced explicitly below). SME stocks passing the main Rs-2cr
+    # gate join the main lists as sector "SME"; the rest are covered by the SME momentum watch.
     sme_syms: set[str] = set()
-    sme_relaxed: dict[str, pd.DataFrame] = {}
     try:
-        SME_GATE = 5_000_000.0
         for sym, df in _sme_cohort(dao, market["as_of"]).items():
             if sym in eligible or sym in stocks:
                 continue
             if engine.eligible(df, asof=market["as_of"]):
                 eligible[sym] = df
                 sme_syms.add(sym)
-            elif engine.eligible(df, asof=market["as_of"], min_turnover=SME_GATE):
-                sme_relaxed[sym] = df
     except Exception as e:
         print(f"  sme cohort skipped: {type(e).__name__}: {e}")
 
-    # ---- relaxed-liquidity SME watch candidates (best-effort, watch-only)
+    # ---- SME momentum watch (sme_watch.py, chosen by sme_lab.py): research only, never
+    # actionable. Replaces the old relaxed-liquidity bear-reversal SME watch, which fired 22
+    # times in six years of SME history.
     sme_watch: list[Candidate] = []
     try:
-        for sym, df in sme_relaxed.items():
-            try:
-                rs_ok, slope, excess60 = engine.rs_conditions(df)
-                h = engine.setup_h(df) if rs_ok else None
-                r = engine.setup_r(df) if rs_ok and bool(market["recent_stress"]) else None
-                if h is None and r is None:
-                    continue
-                near, wf = engine.near_pivot_watch(df)
-                trig, f = engine.entry_trigger(df, h)
-                if not near and not trig:
-                    continue
-                c = Candidate(symbol=sym, sector="SME",
-                              setups=(["H"] if h else []) + (["R"] if r else []),
-                              state="TRIGGERED" if trig else "WATCH",
-                              excess60=excess60 if excess60 == excess60 else float("nan"),
-                              rs_slope20=slope, provisional=not trig)
-                if trig:
-                    c.pivot, c.stop = f["pivot"], f["stop"]
-                    c.stop_distance_pct = f["stop_distance_pct"]
-                    c.extension_atr = f["extension_atr"]
-                    c.volume_ratio = f["volume_ratio"]
-                    c.base_width = f.get("base_width", float("nan"))
-                    c.contraction_ratio = f.get("contraction_ratio", float("nan"))
-                    c.entry_close = f["entry_close"]
-                    c.score, c.score_components = engine.score(c, 0.5, 0.5, f["volume_ratio"])
-                else:
-                    c.pivot, c.stop = wf["pivot"], wf["stop"]
-                    c.base_width = wf.get("base_width", float("nan"))
-                    c.entry_close = wf["entry_close"]
-                    c.extension_atr = -wf.get("dist_to_pivot_atr", float("nan"))
-                    c.score, c.score_components = engine.score(c, 0.5, 0.5, None)
-                c.reasons = ["SME board — relaxed Rs0.5cr liquidity, NEVER actionable (plan rule)"]
-                sme_watch.append(c)
-            except Exception:
-                continue
-        sme_watch.sort(key=lambda x: -x.score)
-        sme_watch = sme_watch[:5]
+        from sme_watch import run as _sme_momentum
+        sme_momentum = _sme_momentum(market["as_of"])
     except Exception as e:
-        print(f"  sme watch skipped: {type(e).__name__}: {e}")
+        sme_momentum = {"names": [], "error": f"{type(e).__name__}: {e}"}
+        print(f"  sme momentum skipped: {sme_momentum['error']}")
+    try:                                              # SME episodes in the signal ledger
+        from signal_ledger import write_sme_market
+        write_sme_market(market["as_of"])
+    except Exception as e:
+        print(f"  sme ledger skipped: {type(e).__name__}: {e}")
 
     # cross-sectional percentiles for the leadership score component
     stats = {sym: _ret60_ret20(df, bench_close) for sym, df in eligible.items()}
@@ -227,15 +291,16 @@ def run_scan(dao: DataAccess, market: dict) -> dict:
 
     recent_stress = market["recent_stress"]
     threshold = float(cfg["score"]["actionable_threshold"])
+    rules = v2(cfg)
     triggered, prebreak, notes = [], [], []
 
     for sym, df in eligible.items():
         rs_ok, slope, excess60 = engine.rs_conditions(df)
         h = engine.setup_h(df) if rs_ok else None
         r = engine.setup_r(df) if rs_ok and recent_stress else None
-        if h is None and r is None:
+        setups = keep_setups(h, r, cfg)
+        if not setups:
             continue
-        setups = ([ "H"] if h else []) + (["R"] if r else [])
         sector = "SME" if sym in sme_syms else sector_of.get(sym, "UNKNOWN")
         base = Candidate(symbol=sym, sector=sector, setups=setups,
                          excess60=excess60 if excess60 == excess60 else (stats.get(sym) or (float("nan"),))[0],
@@ -243,68 +308,87 @@ def run_scan(dao: DataAccess, market: dict) -> dict:
 
         trig, f = engine.entry_trigger(df, h)
         if trig:
-            base.state = "TRIGGERED"
-            base.pivot = f["pivot"]; base.stop = f["stop"]
-            base.stop_distance_pct = f["stop_distance_pct"]
-            base.extension_atr = f["extension_atr"]
-            base.volume_ratio = f["volume_ratio"]
-            base.base_width = f.get("base_width", float("nan"))
-            base.contraction_ratio = f.get("contraction_ratio", float("nan"))
-            base.entry_close = f["entry_close"]
-            base.score, base.score_components = engine.score(
-                base, pct60.get(sym, 0.0), pct20.get(sym, 0.0), f["volume_ratio"])
-            base.reasons = [f"fresh close above pivot {f['pivot']:.1f} "
-                            f"({f['extension_atr']:.2f} ATR up, volume {f['volume_ratio']:.1f}x)",
-                            f"structural stop {f['stop']:.1f} ({f['stop_distance_pct']:.1%} away)"]
+            _fill_trigger(base, f, engine, cfg, pct60.get(sym, 0.0), pct20.get(sym, 0.0))
+            base.trigger_date, base.age_sessions, base.since_trigger = \
+                str(pd.Timestamp(market["as_of"]).date()), 0, 0.0
+            base.reasons[0] = "fresh " + base.reasons[0]
             triggered.append(base)
             if not market["entries_enabled"]:
-                base.suppress_reason = "BREADTH_BLOCKED"
+                if rules["breadth_gate_blocks"]:
+                    base.suppress_reason = "BREADTH_BLOCKED"
+                else:
+                    base.breadth_note = "breadth gate closed (context only under V2)"
         else:
             near, wf = engine.near_pivot_watch(df)
             if near:
                 base.state = "WATCH"
                 base.pivot = wf["pivot"]; base.stop = wf["stop"]
                 base.base_width = wf.get("base_width", float("nan"))
+                base.contraction_ratio = wf.get("contraction_ratio", float("nan"))
+                base.stop_distance_pct = wf.get("stop_distance_pct", float("nan"))
                 base.entry_close = wf["entry_close"]
                 base.extension_atr = -wf.get("dist_to_pivot_atr", float("nan"))
                 # provisional score: volume component withheld
                 base.score, base.score_components = engine.score(base, pct60.get(sym, 0.0),
                                                                  pct20.get(sym, 0.0), None)
+                set_core(base)
                 base.provisional = True
                 base.reasons = [f"pre-breakout: {wf.get('dist_to_pivot_atr', float('nan')):.2f} ATR "
                                 f"below pivot {wf['pivot']:.1f} (score provisional, no volume points)"]
+                if rules["active"]:
+                    base.needs = _needs(base, engine, cfg, pct60.get(sym, 0.0), pct20.get(sym, 0.0))
                 prebreak.append(base)
 
-    # actionable: fresh triggers with a COMPLETE score meeting the threshold
-    actionable_pool = [c for c in triggered
-                       if c.score >= threshold and c.score_components.get("sector") is not None
-                       and c.suppress_reason is None]
-    incomplete = [c for c in triggered if c.score_components.get("sector") is None]
-    for c in incomplete:
-        notes.append(f"{c.symbol}: trigger suppressed (sector score incomplete -> watch-only)")
-    low_score = [c for c in triggered if c.score < threshold and c not in actionable_pool]
-    for c in low_score:
-        c.suppress_reason = c.suppress_reason or "SCORE_BELOW_80"
-        notes.append(f"{c.symbol}: trigger scored {c.score:.0f} (<{threshold:.0f}) -> not actionable")
+    # V2: breakouts of the last `actionable_window` sessions stay actionable
+    today_trig = {c.symbol for c in triggered}
+    for c in _recent_triggers(engine, eligible, bench_close, market, cfg, today_trig, sme_syms, sector_of):
+        if not market["entries_enabled"] and not rules["breadth_gate_blocks"]:
+            c.breadth_note = "breadth gate closed (context only under V2)"
+        triggered.append(c)
+    prebreak = [c for c in prebreak if c.symbol not in {t.symbol for t in triggered}]
+
+    # actionable: fresh triggers meeting the score rule (V2: core score >= 60 of 85)
+    actionable_pool = [c for c in triggered if is_actionable(c, cfg) and c.suppress_reason is None]
+    # plan rule: SME listings are never new entries (this used to ride on the missing sector
+    # score, which V2 no longer requires, so it is explicit now)
+    for c in [c for c in actionable_pool if c.sector == "SME"]:
+        actionable_pool.remove(c)
+        c.suppress_reason = "SME_NEVER_ACTIONABLE"
+        notes.append(f"{c.symbol}: SME trigger -> watch only (plan rule)")
+    for c in triggered:
+        if c in actionable_pool or c.suppress_reason in ("BREADTH_BLOCKED", "SME_NEVER_ACTIONABLE"):
+            continue
+        if rules["active"]:
+            c.suppress_reason = "CORE_SCORE_LOW"
+            notes.append(f"{c.symbol}: trigger core score {c.core_score:.0f} "
+                         f"(<{rules['core_threshold']:.0f} of 85) -> not actionable")
+        elif c.score_components.get("sector") is None:
+            notes.append(f"{c.symbol}: trigger suppressed (sector score incomplete -> watch-only)")
+        else:
+            c.suppress_reason = c.suppress_reason or "SCORE_BELOW_80"
+            notes.append(f"{c.symbol}: trigger scored {c.score:.0f} (<{threshold:.0f}) -> not actionable")
 
     log: list[str] = []
     actionable = _select(actionable_pool, returns, cfg, set(), log)
 
     # watch: breadth-blocked triggers (full score >= threshold) + pre-breakouts
     blocked = [c for c in triggered if c.suppress_reason == "BREADTH_BLOCKED" and c.score >= threshold]
-    watch_pool = blocked + [c for c in prebreak if c.symbol not in {a.symbol for a in actionable}]
+    sme_trig = [c for c in triggered if c.suppress_reason == "SME_NEVER_ACTIONABLE"]
+    watch_pool = blocked + sme_trig + [c for c in prebreak if c.symbol not in {a.symbol for a in actionable}]
     watch = _select_watch(watch_pool, returns, cfg, {a.symbol for a in actionable}, log)
 
     return {
         "as_of": market["as_of"],
         "eligible": len(eligible), "sme_eligible": len(sme_syms),
         "sme_watch": sme_watch,
+        "sme_momentum": sme_momentum,
         "scanned": len(stocks),
         "actionable": actionable,
         "watch": watch,
         "breadth_blocked": blocked,
         "suppressed": log,
         "notes": notes,
+        "v2": rules,
         "sector_pct": sec_pct,
         "sector_improving": sec_improving,
         "sector_sizes": sec_sizes,
@@ -315,7 +399,7 @@ def run_scan(dao: DataAccess, market: dict) -> dict:
 def _select_watch(cands: list[Candidate], returns: dict[str, pd.Series], cfg: dict,
                   exclude: set[str], log: list[str]) -> list[Candidate]:
     sl = cfg["shortlist"]
-    blocked = [c for c in cands if c.suppress_reason == "BREADTH_BLOCKED"]
+    blocked = [c for c in cands if c.suppress_reason in ("BREADTH_BLOCKED", "SME_NEVER_ACTIONABLE")]
     pre = sorted([c for c in cands if c.provisional],
                  key=lambda c: (-c.score, c.symbol))
     ordered = blocked + pre                      # breadth-blocked triggers rank first

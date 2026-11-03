@@ -76,11 +76,13 @@ delisted before 2024 have no cap, so these comparisons are made on the known-cap
 - **Daily run** (via `next_bull_watch.run`): refreshes `ui_data/signal_ledger_market.json` with every episode of the last year, its A/S tags, and closes since the first signal.
 - **Your decisions** live only in `state/signal_ledger.json`, written by the UI and never touched by the daily run. For each episode: status (new/researching/wait/bought/passed/exited), note, buy and exit price/date, plus your slot count.
 - **The tab shows:**
-  - the queue in priority order (P1 small cap + tier A, P2 small cap, P3 tier A, P4 rest, with lab hit rates);
+  - the queue in priority order, by evidence on the common yardstick (`setup_compare.py`, `nextbull_lab.py`): P1 Next Bull grade A+, P2 grade A, P3 IPO A, P4 IPO B, P5 grade B (clock not ready), P6 grade X (hard veto), P7 SME. A main-board episode is graded on its first signal, or on today's session while it is on today's list, with the fundamentals known that day; `?` on the grade = no fundamentals on file, so the fundamental vetoes were not checked. The small-cap / RS ≥ 95 tags are shown but no longer set the priority (as groups they did worse trade by trade);
   - free slots;
   - for holdings: return and the trailing stop (close 50% below the highest close since your buy, on split-adjusted closes), with an alert when it is hit;
   - expired episodes.
 - **Pass notes are deliberate data:** later they let us test whether fundamental filters add lift.
+- **IPO buy signals** (tagged IPO A / IPO B, priority P3 / P4, ids `IPO.<symbol>:<signal date>`): `ipo_watch.py` writes `ui_data/signal_ledger_ipo.json`, one episode per IPO breakout that passed the IPO lab's rule on its signal day (tier, listing gain < 30%, bull clock that day). "On list" = inside the 10-session buy window under today's clock. "+ Ledger" is on the IPO Watch table. They queue after grades A+ / A and ahead of grades B / X, where they sit on the common yardstick.
+- **SME episodes** (tagged SME, priority P7, ids `SME.<symbol>:<date>`): the daily scan writes `ui_data/signal_ledger_sme.json` from the SME momentum rule (`sme_watch.signal_frame`, RS vs SME peers ≥ 90) with the same episode rules. They are research only and never actionable, so they sort last, have no market cap, tier or Dossier, and get "+ Ledger" from the Candidates SME momentum table. A bought SME name uses the same trailing stop and takes a slot.
 
 **Biggest past baggers.** `python bear_reversal/bagger_history.py` writes `docs/BIGGEST_BAGGERS.md`: the top buyable bottom→peak runs (`--top 50` now) (peak within 3 years) since 2014, when the BAGGER SIGNAL first fired in each and how much was left, why it missed the others, and a blank fundamentals worksheet per stock. It refuses to overwrite that file once you have filled it in (`--force` / `--out PATH`).
 
@@ -103,10 +105,132 @@ names on today's Next Bull lists are accepted; a repeat click within `cache_days
 - **Breadth improvement**: ≥3 of 4 components on each of 3 consecutive sessions (MA20 +5pp/5s, MA50 +5pp/20s, net-advance EMA5>0>EMA20, new-52w-low rate falling). CONFIRMED = 5 sessions of Nifty 500 > MA50 with breadth50 > 50% and rising MA50. DETERIORATING = both MA20(5s) and MA50(20s) changes negative.
 - **Stress**: Nifty 500 ≥10% under its 52-week high below a flattening MA200, or Midcap 150 ≥15% under with breadth50 < 35%; `recent_stress` = any stress in 126 sessions.
 - **Entry gate**: new entries only with IMPROVING/CONFIRMED breadth (caps 25%/60% during stress-recovery); otherwise strong patterns stay watch-only.
-- **Setups**: **H** (higher stock low vs a benchmark retest: confirmed swing lows 10–60 sessions apart, second low ≥ first + 0.5 ATR, benchmark second 5-session minimum ≤ 101% of the first, low unbroken, ≤40 sessions old) and **R** (resilient within 20% of its 52-week high above MA50 during recent stress). Shared RS: positive 20-session RS slope, within 2% of the 60-session RS high, 60-session excess return in the top 20% of the eligible cohort.
+- **Setups**: **H** (higher stock low vs a benchmark retest: confirmed swing lows 10–60 sessions apart, second low ≥ first + 0.5 ATR, benchmark second 5-session minimum ≤ 101% of the first, low unbroken, ≤40 sessions old) and **R** (resilient within 20% of its 52-week high above MA50 during recent stress). Shared RS: positive 20-session RS slope, within 2% of the 60-session RS high. (The config also lists a top-20% 60-session excess-return rule, but `setups.py` never applies it; the full-market test found it mixed.)
 - **Trigger** (at close): >MA50, positive 20-session return, 10-session base ≤12% wide, TR5<TR20 contraction, first close above pivot `max(high[t-10:t])`, volume ≥1.5× prior-20 mean, ≤1 ATR above pivot, stop distance ≤12%. Structural stops: H → second low −0.5 ATR; R → base low −0.5 ATR.
 - **Score (0–100, actionable ≥80)**: leadership 30, base/contraction 25, volume 15, entry/risk 15, sector support 15 (sector RS percentile + sector breadth improvement). Incomplete sector data blocks actionable status (watch-only), never silently awarded.
 - **Selection**: ≤5 actionable + ≤5 watch, ≤2 per sector, correlation >0.85 suppression (60-session returns, ≥50 common observations).
+
+## Full-market test (`bear_lab.py`, 1 Nov 2026)
+
+`python bear_reversal/bear_lab.py` re-implements the rules above on the adjusted full-market
+panel (every NSE stock since 2014, incl. delisted) and measures what followed each list,
+point-in-time, in two halves (2015-19 / 2020-24). Report: `reports/BEAR_LAB.md`.
+
+**Does the lab match the live scanner?** On 30 Oct 2026 the lab found 15 of the 17
+pre-cap watch names the live scan found. Every lab-only name is outside the live
+744-stock universe.
+
+**Findings** (values are 2015-19 / 2020-24; "trail50" = exit on a close 50% below the
+highest close since entry, 2-year cap):
+
+| Finding | Evidence |
+|---|---|
+| **The live structural stop destroys the edge** | Same triggers: median trade −8% / −7% with the stop (most get stopped out) vs **+13% / +40%** with trail50. Random eligible stocks with trail50: −14% / +18%. |
+| **Setup H on its own is the weak part** | H-only triggers: 3-month excess return vs Nifty 500, median −3.3% / −1.7%; trail50 median −10% / +23%. R or H+R: trail50 median +21% to +34% / +56% to +64%. |
+| **Bear context matters** | Triggers during recent stress beat those outside it on every measure (trail50 median +23% / +61% vs −9% / +21%). |
+| **The score ranks usefully; 80 is too strict** | Triggers scoring ≥ 60 of 85 beat lower scores on 3-month excess in both halves (+0.9% / +0.3% vs −0.9% / −1.1%). Only 21 / 11 triggers reached the 80-equivalent level in ten years. |
+| **The breadth gate did not help** | Gate-open triggers did no better than all triggers. "Actionable" (80-eq + gate) fired 2 / 5 times in ten years. |
+| **Not robust (mixed between halves)** | The configured top-20% 60-day excess rule (in the config and the rules list above, but **never applied in code**), the bagger-lab leadership gate, price ≤ ₹200, cap ≤ ₹1,000 cr. |
+
+**V2 candidate** (setup R required, trigger, score ≥ 60/85, no breadth block, trail50 exit):
+about 5 names a month. trail50 median +23% / +55%, win rate 66% / 79%, 2x within 2 years
+17% / 48%. Its 3-month excess return was mixed (+1.6% / −2.0%).
+
+**Applied 1 Nov 2026** via the `v2:` block in `bear_reversal.yaml`, used by `scan.py` and
+`replay.py` through `setups.v2 / keep_setups / is_actionable`. Delete the block to go back
+to the original plan rules. Under V2, triggers are no longer breadth-blocked: the gate is
+shown as context, and the score column is the core score out of 85 (full score in brackets).
+
+**Actionable window (1 Nov 2026).** A trigger is the breakout day itself, so the list used to
+blink for one day. In the lab, entering V2 triggers up to 10 sessions late tested the same as
+entering the next day: median trailing-stop trade +21–23% (2015-19) and +55–58% (2020-24) for
+entry on days 1 to 10. Actionable now keeps each breakout for 10 sessions (`v2.actionable_window`),
+showing its date, age and move since, and a "below stop" flag if it has closed under its
+structural stop. Watch names show what a breakout needs: price and volume ratio, or "can't reach
+60 yet".
+
+## SME board (`sme_data.py`, `sme_lab.py`, `sme_watch.py`, 1 Nov 2026)
+
+- **Data.** `sme_data.py` builds a split/bonus-adjusted panel of every NSE SME stock since 2020
+  (795 symbols), keeping rows after migration to the main board (140 migrated). SME
+  prev-close values are noisy, so a factor counts only if the opening price confirms it. An
+  opening gap beyond the SME price band after a normal session is treated as a corporate
+  action: 501 adjustments, 153 fake crashes removed.
+- **Test.** `sme_lab.py` tests rules against an equal-weight SME index. Results are in
+  `reports/SME_LAB.md`.
+- **2021-22 is too thin to judge:** only 38 eligible samples.
+- **The old SME watch** (bear-reversal rules vs the Nifty 500) fired 22 times in six years.
+- **Most SME trades lost money.** Even with the trailing exit, the median eligible SME trade
+  lost 22–31% in 2023-26. Higher liquidity floors (₹1cr, ₹2cr) did worse.
+- **RS rank vs other SMEs ≥ 90 was the only rule better in both usable periods**, on the
+  longer-horizon measures:
+
+  | Measure | 2023-24 (rule vs all SMEs) | 2025-26 partial |
+  |---|---|---|
+  | Doubled within a year | 34% vs 23% | 20% vs 11% |
+  | Median trailing-stop trade | −18% vs −22% | −12% vs −31% |
+
+  Its 3-month result was mixed.
+- **The new SME momentum watch** (`sme_watch.py`, in the scan) uses that rule: ₹0.5cr
+  liquidity, 260 sessions of history, top 10 by RS rank. It is research only and **never
+  actionable**. The old relaxed-liquidity SME watch is retired. SME stocks above the ₹2cr gate
+  still join the main lists as sector "SME", watch-only.
+
+## IPOs (`ipo_data.py`, `ipo_lab.py`, `ipo_watch.py`, IPO Watch tab, 2 Nov 2026)
+
+- **Data:** NSE's past-issue list (main board + SME Emerge, issue price, listing date) matched
+  to the adjusted price panels: 1,105 IPOs since 2016. 27 SME listings that NSE's list overwrote
+  with a later event (e.g. KSOLVES 2020) are inferred from first trading days (whole-rupee
+  previous close = issue price, ≥ ₹10 lakh traded). Listing market cap uses the 2024+ share
+  count carried back. BSE-only listings (incl. BSE SME) are not covered.
+- **Lab** (`reports/IPO_LAB.md`), runs dated on the Nifty 500 (2020-03-23 → 2021-10-18, +154%;
+  2023-03-28 → 2024-09-26, +72%):
+  - When an IPO listed mattered most. Bought at the listing close, those listed 6 months before
+    the low or in the run's first 6 months beat those listed late: small IPOs 1y median +43%
+    vs −10%, trailing-stop median +27% vs −11%.
+  - Listing pop: listing gain > 100% → 2y median −24%; < 20% did best.
+  - Allotted investors (issue price) did far better than market buyers.
+  - SMEs had the fattest right tail (2020 run: 92% doubled within 2y); main board ≥ ₹5,000cr
+    rarely doubled.
+  - A plain post-listing breakout added nothing; breakout + listing gain < 30% did, and the
+    bull clock on the signal day (point-in-time) separated good and bad regimes.
+- **Buy signal** (`ipo_watch.py`, daily): first close above every high since listing, ≥ 15
+  sessions after listing, ≥ 1.5x the 20-day median traded value, within the first year,
+  listing gain < 30%, valid 10 sessions.
+  - **A — SME:** clock washout / early bull / broad bull. Lab: doubled within 2y 67–69%,
+    trailing-stop median +40% or better.
+  - **B — main board < ₹5,000cr:** clock early bull only. Lab: 54%, +19% (weaker).
+  - **Ranking** when several signal at once: rule A before B, then the rank (0–100: how
+    small the listing market cap and how calm the listing gain are vs past rule breakouts of
+    the same rule), then the freshest signal. Of six traits tested, only those two separated
+    outcomes; base depth, time to breakout, price vs issue and strength vs the Nifty 500 did
+    not. The better half did better overall (SME: doubled within 2y 76% vs 60%, 5x 37% vs
+    10%), mostly from signals up to 2022; since 2023 the gap is small. The ledger queues IPO
+    episodes by the same rank inside P3 / P4.
+  - Clock "early bull" also fired in 2025 without a run following (those entries are not yet
+    2 years old). SMEs trade in lots and can be hard to exit; the rule has no extension filter.
+
+## Setup comparison and the Next Bull grade (`setup_compare.py`, `nextbull_lab.py`, 3 Nov 2026)
+
+- **One yardstick for all setups** (`reports/SETUP_COMPARE.md`): signals 2016 → Oct 2024,
+  entry at the signal close, 50% trailing stop or 2 years, one trade per episode. Return per
+  year of capital held: bear reversal V2 +29% (median trade +33%, 70% wins, steadiest);
+  Next Bull raw +32% (median −5%, lottery-like); IPO rule A +249% (median +42%, but 72% of
+  gains from the best tenth and mostly 2021–22); IPO rule B +49%.
+- **Fundamentals** (`screener_fund.py`): annual P&L, balance sheet, cash flow, ROCE and
+  yearly shareholding from each company's public screener.in page, ~3 s apart. Kept
+  permanently as raw pages (`state/screener/`) and one JSON per company
+  (`state/fundamentals/<SYM>.json`: figures, basis, URL, fetch date); a fiscal year counts
+  75 days after it ends. `--universe` fills the store for every live stock (resumable).
+- **What made Next Bull trades pay** (`reports/NEXT_BULL_LAB.md`, kept only if it held in
+  2016-19 AND 2020-24): the bull clock gate (washout / early bull) first; then vetoes, which
+  beat fundamentals as buy filters. Hard vetoes: turnover ≥ ₹15cr, promoters cutting > 2pp
+  in a year, institutions < 2%. Soft: loss-making, 3 years of negative cash flow. Boosters:
+  tight 10-day range ≤ 12%, sales growth ≥ 20%. Fundamentals as buy filters (low P/E, P/S,
+  P/B, low debt, ROCE) helped only in 2020-24. Waiting for a better entry did not help.
+- **Grade on Next Bull Watch:** A+ / A = take (lab: median trade +38–45%, +52–59% a year
+  held), B = no veto but clock not ready (−19%, +13%), X = hard veto (−10%, +27%; −12% a
+  year in 2016-19). 2018 lost money under every variant (a washout that did not turn).
 
 ## Known deviations from the plan (disclosed in every report)
 

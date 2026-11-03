@@ -76,6 +76,12 @@ export async function fetchDossier(symbol) {
 }
 
 /** Signal ledger: one row per signal episode + your decisions (signal_ledger.py). */
+export async function fetchIpoWatch() {
+  const r = await fetch('/api/ipo-watch');
+  const j = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+  return r.ok ? j : { error: j.error || `HTTP ${r.status}` };
+}
+
 export async function fetchLedger() {
   const r = await fetch('/api/ledger');
   const j = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));

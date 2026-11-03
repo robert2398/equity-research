@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { fetchLedger, saveLedgerSettings, fmtNum } from '../api.js';
 import { DossierModal } from './NextBullWatch.jsx';
-import { DecideModal, OnList, STATUS_PILL, Tags, signed } from '../components/LedgerDecide.jsx';
+import { DecideModal, LedgerGrade, OnList, STATUS_PILL, Tags, signed } from '../components/LedgerDecide.jsx';
 
 const OPEN = ['NEW', 'RESEARCHING', 'WAIT'];
 const VIEWS = [
@@ -10,11 +10,18 @@ const VIEWS = [
   ['passed', 'Passed', (r) => r.status === 'PASSED'],
   ['exited', 'Exited', (r) => r.status === 'EXITED'],
   ['expired', 'Expired', (r) => r.shown_status === 'EXPIRED'],
+  ['ipo', 'IPO', (r) => r.board === 'ipo'],
+  ['sme', 'SME', (r) => r.sme],
   ['all', 'All', () => true],
 ];
 
 function HowTo({ rules }) {
-  const pr = rules?.priority || {};
+  // one list in queue order: grades A+ / A, IPO rules, grades B / X, SME
+  const groups = [
+    ...Object.entries(rules?.priority || {}).map(([k, v]) => ({ p: Number(k), label: v.group, ev: v.evidence })),
+    ...Object.entries(rules?.ipo || {}).map(([t, v]) => ({ p: v.priority, tag: <span className="pill green">IPO {t}</span>, label: v.group, ev: v.hit2x })),
+    ...(rules?.sme ? [{ p: rules.sme.priority, tag: <span className="pill amber">SME</span>, label: rules.sme.group, ev: rules.sme.hit2x, tip: rules.sme.note }] : []),
+  ].sort((a, b) => a.p - b.p);
   return (
     <div className="steps">
       <div className="step"><span className="n">1</span><span className="t">Review once a week</span>
@@ -22,9 +29,10 @@ function HowTo({ rules }) {
           stays live {rules?.live} sessions after its last one. Dropping off the daily list means nothing; buying on
           day 1 tested no better than 10–20 sessions later.</div></div>
       <div className="step"><span className="n">2</span><span className="t">Fill free slots in priority order</span>
-        <div className="d">{Object.entries(pr).map(([k, v]) => (
-          <div key={k}>P{k} {v.group} — 10x hit {v.hit10}</div>))}
-          <div style={{ marginTop: 3 }}>(lab, 2015-19 / 2020-24) · ties: Dossier fundamentals</div></div></div>
+        <div className="d">{groups.map((g) => (
+          <div key={g.p} style={{ marginTop: 3 }} title={g.tip}>P{g.p} {g.tag} {g.label} — {g.ev}</div>))}
+          <div style={{ marginTop: 3 }}>(every signal 2016–24, bought at the signal close, 50% trailing stop or 2 years) ·
+            main-board names are graded on their first signal, or today while on today&apos;s list · ties: oldest first</div></div></div>
       <div className="step"><span className="n">3</span><span className="t">Decide and write why</span>
         <div className="d">Open the Dossier, apply the vetoes, mark Bought / Passed / Wait with a note. Pass notes
           are the data that will later show whether the fundamental filters help.</div></div>
@@ -63,8 +71,12 @@ export default function SignalLedger({ onOpen }) {
   return (
     <div>
       <h1>Signal Ledger</h1>
-      <div className="small">every BAGGER SIGNAL episode of the last year, your decision on each, and the exit
-        rule on what you hold · data as of {data.as_of} · no AI, nothing leaves this machine</div>
+      <div className="small">every BAGGER SIGNAL episode of the last year, plus IPO buy signals
+        (<span className="pill green">IPO A/B</span>) and SME momentum episodes
+        (<span className="pill amber">SME</span>, research only), your decision on each, and the exit
+        rule on what you hold · data as of {data.as_of}
+        {data.sme_as_of && data.sme_as_of !== data.as_of && <> (SME {data.sme_as_of})</>} · no AI, nothing
+        leaves this machine</div>
 
       <div className="grid cards" style={{ marginTop: 12 }}>
         <div className="card"><div className="label">Slots</div>
@@ -106,7 +118,7 @@ export default function SignalLedger({ onOpen }) {
         {rows.length === 0 ? <div className="empty-ai">nothing here yet</div> : (
           <table>
             <thead><tr>
-              <th>#</th><th title="priority group">Pri</th><th>Symbol</th><th>First signal</th>
+              <th>#</th><th title="priority group · Next Bull grade (hover for vetoes; ? = no fundamentals on file)">Pri</th><th>Symbol</th><th>First signal</th>
               <th title="sessions on the list · separate streaks">On list</th><th>Today</th>
               <th>Since signal</th><th>Mcap ₹cr</th><th>Status</th>
               {showPos && <><th>Buy ₹</th><th>Return</th><th title="exit if a close falls to this">Stop ₹</th></>}
@@ -118,7 +130,7 @@ export default function SignalLedger({ onOpen }) {
                 return (
                   <tr key={r.id} onClick={() => setEdit(r)}>
                     <td className="mut">{r.queue_rank && view === 'queue' ? r.queue_rank : i + 1}</td>
-                    <td><b>P{r.priority}</b></td>
+                    <td style={{ whiteSpace: 'nowrap' }}><b>P{r.priority}</b> <LedgerGrade r={r} /></td>
                     <td>{r.symbol} <Tags r={r} /></td>
                     <td>{r.first_date} · ₹{fmtNum(r.first_price, 1)}</td>
                     <td>{r.sessions_on}d · {r.streaks}x</td>
@@ -136,7 +148,7 @@ export default function SignalLedger({ onOpen }) {
                     <td onClick={(e) => e.stopPropagation()}>
                       <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                         <button type="button" className="btn xs primary" onClick={() => setEdit(r)}>Decide</button>
-                        {r.on_list_today && <button type="button" className="btn xs" onClick={() => setDossier(r.symbol)}
+                        {r.on_list_today && r.board === 'main' && <button type="button" className="btn xs" onClick={() => setDossier(r.symbol)}
                           title="signal facts + research checklist (no AI)">Dossier</button>}
                         <button type="button" className="btn xs ghost" onClick={() => onOpen(r.symbol)}>Chart</button>
                       </div>
@@ -149,7 +161,9 @@ export default function SignalLedger({ onOpen }) {
         )}
       </div>
       <div className="small" style={{ marginTop: 6 }}>
-        Dossier is available while the name is on today&apos;s list · expired = left the list over {data.rules.live}{' '}
+        Dossier is available while a main-board name is on today&apos;s list · SME episodes come from the SME
+        momentum watch (RS vs SME peers ≥ 90) and have no market cap · IPO episodes are breakouts that passed
+        the IPO lab&apos;s rule on their signal day (IPO Watch tab); &quot;on list&quot; = within the 10-session buy window · expired = left the list over {data.rules.live}{' '}
         sessions ago with no decision · prices are as quoted; returns and stops use split-adjusted closes
       </div>
 
