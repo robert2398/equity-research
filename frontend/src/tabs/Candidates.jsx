@@ -18,7 +18,8 @@ function ScoreBar({ comps }) {
   );
 }
 
-/** SME board: top 10% of SME stocks by 6-month return (sme_watch.py, tested in sme_lab.py). */
+/** SME board: buy signals (breakout rule, sme_bull_lab.py) and the momentum research list
+ * (top 10% of SME stocks by 6-month return, sme_lab.py) — both from sme_watch.py. */
 function SmeMomentum({ sm, legacy, list, onOpen }) {
   const [ledger, setLedger] = useState(null);         // signal_ledger view (SME episodes)
   const [decide, setDecide] = useState(null);
@@ -30,7 +31,52 @@ function SmeMomentum({ sm, legacy, list, onOpen }) {
           : <span className="mut small">no SME candidates today (old rules — rerun run_daily.py for the momentum watch)</span>}
       </div>);
   }
+  const buy = sm.buy || {};
+  const pick = (sym) => setDecide(ledgerEpisode(ledger, sym, 'sme'));
   return (
+    <>
+    <h3 style={{ marginTop: 4 }}>SME buy signals{' '}
+      <span className={`pill ${buy.clock_ok ? 'green' : 'grey'}`} title="main-market bull clock; the rule is tested only in washout / early bull">
+        clock {(buy.clock || '–').toLowerCase()}</span></h3>
+    <div className="panel" style={{ overflowX: 'auto' }}>
+      {buy.error ? <span className="neg small">SME buy rule skipped: {buy.error}</span> : <>
+        <div className="small" style={{ marginBottom: 6 }}>{buy.rule}</div>
+        <table>
+          <thead><tr>
+            <th>Status</th><th>Symbol</th><th title="breakout session · sessions ago">Breakout</th>
+            <th title="prior 1-year closing high, as quoted today">Pivot ₹</th><th>Close ₹</th>
+            <th title="close vs the pivot (buys) · distance up to the pivot (basing)">vs pivot</th>
+            <th title="breakout-day volume vs its 50-day median">Vol</th><th title="median daily traded value, 60 sessions">Liquidity ₹cr</th>
+            <th title="6-month return rank among eligible SME stocks">RS vs SME</th>
+            <th title="track it in the Signal Ledger (tagged SME, priority P4)">Ledger</th>
+          </tr></thead>
+          <tbody>
+            {[...(buy.signals || []), ...(buy.basing || [])].map((n) => (
+              <tr key={n.symbol} onClick={() => onOpen(n.symbol)}>
+                <td><span className={`pill ${n.status === 'BUY' ? 'green' : n.status === 'BREAKOUT' ? 'amber' : n.status === 'FAILED' ? 'red' : 'grey'}`}
+                  title={n.why_not || (n.status === 'BASING' ? 'listed > 1 year, within 10% below its pivot — a breakout on 1.5x volume would make it a buy' : 'buy window open')}>
+                  {n.status.toLowerCase()}</span></td>
+                <td>{n.symbol}</td>
+                <td>{n.breakout_date ? `${n.breakout_date} · ${n.sessions_ago}d` : '–'}</td>
+                <td>{n.pivot ?? '–'}</td><td>{n.close ?? '–'}</td>
+                <td className={n.status === 'BASING' ? 'mut' : (n.vs_pivot >= 0 ? 'pos' : 'neg')}>
+                  {n.status === 'BASING' ? `${fmtPct(n.to_pivot, 0)} to go` : fmtPct(n.vs_pivot, 0)}</td>
+                <td>{n.vratio != null ? `${n.vratio}x` : '–'}</td><td>{n.turnover_cr ?? '–'}</td>
+                <td>{n.rs_sme != null ? Math.round(n.rs_sme) : '–'}</td>
+                <td onClick={(e) => e.stopPropagation()}>
+                  {ledger && n.status === 'BUY' && <LedgerButton entry={ledgerEpisode(ledger, n.symbol, 'sme')}
+                    onClick={() => pick(n.symbol)} />}
+                </td>
+              </tr>
+            ))}
+            {!(buy.signals || []).length && !(buy.basing || []).length
+              && <tr><td colSpan={10} className="mut">no SME breakouts or bases today</td></tr>}
+          </tbody>
+        </table>
+        <div className="small" style={{ marginTop: 6 }}>{buy.note}</div>
+      </>}
+    </div>
+    <h3>SME momentum <span className="pill amber">research list, not a buy</span></h3>
     <div className="panel" style={{ overflowX: 'auto' }}>
       <div className="small" style={{ marginBottom: 6 }}>{sm.rule} · {sm.eligible} eligible SME stocks</div>
       <table>
@@ -38,7 +84,7 @@ function SmeMomentum({ sm, legacy, list, onOpen }) {
           <th>Symbol</th><th title="6-month return rank among eligible SME stocks">RS vs SME</th><th>6M</th>
           <th>Close ₹</th><th title="median daily traded value, 60 sessions">Liquidity ₹cr</th>
           <th title="20-day vs prior 120-day median traded value">Turnover accel</th><th>Off 52w high</th><th>&gt; 50-DMA</th>
-          <th title="track it in the Signal Ledger (tagged SME)">Ledger</th>
+          <th title="its SME buy episode in the Signal Ledger, if it has one">Ledger</th>
         </tr></thead>
         <tbody>
           {(sm.names || []).map((n) => (
@@ -51,7 +97,7 @@ function SmeMomentum({ sm, legacy, list, onOpen }) {
               <td>{n.above_ma50 ? '✓' : '–'}</td>
               <td onClick={(e) => e.stopPropagation()}>
                 {ledger && <LedgerButton entry={ledgerEpisode(ledger, n.symbol, 'sme')}
-                  onClick={() => setDecide(ledgerEpisode(ledger, n.symbol, 'sme'))} />}
+                  onClick={() => pick(n.symbol)} />}
               </td>
             </tr>
           ))}
@@ -59,11 +105,12 @@ function SmeMomentum({ sm, legacy, list, onOpen }) {
         </tbody>
       </table>
       <div className="small" style={{ marginTop: 6 }}>{sm.note}</div>
-      {decide && ledger && (
-        <DecideModal row={decide} asOf={ledger.sme_as_of || ledger.as_of} onClose={() => setDecide(null)}
-          onSaved={(v) => { setLedger(v); setDecide(null); }} />
-      )}
     </div>
+    {decide && ledger && (
+      <DecideModal row={decide} asOf={ledger.sme_as_of || ledger.as_of} onClose={() => setDecide(null)}
+        onSaved={(v) => { setLedger(v); setDecide(null); }} />
+    )}
+    </>
   );
 }
 
@@ -154,7 +201,7 @@ export default function Candidates({ bundle, onOpen }) {
       <h2>Bear-reversal — watchlist (max 5, never entry-ready)</h2>
       <div className="panel" style={{ overflowX: 'auto' }}>{list(cand.watch, 'watch')}</div>
 
-      <h2>SME momentum watch <span className="pill amber">research only — never actionable</span></h2>
+      <h2>SME board</h2>
       <SmeMomentum sm={cand.sme_momentum} legacy={cand.sme_watch} list={list} onOpen={onOpen} />
 
       <h2>Scanner setups (4 detectors, liquid universe)</h2>

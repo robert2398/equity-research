@@ -25,7 +25,7 @@ export function LedgerGrade({ r }) {
 export function Tags({ r }) {
   return (
     <>
-      {r.sme &&<span className="pill amber" title="SME board — momentum watch, research only, never actionable">SME</span>}{' '}
+      {r.sme &&<span className="pill amber" title="SME board — breakout buy signal (sme_bull_lab.py); trades in lots, exits can be slow">SME</span>}{' '}
       {r.board === 'ipo' && (
         <span className="pill green" title={`IPO buy signal, rule ${r.ipo_tier} (${r.ipo_board === 'SME' ? 'SME board' : 'main board'}) · listed ${r.listing_date} · listing gain ${fmtPct(r.listing_gain, 0)} · rank ${r.ipo_rank != null ? Math.round(r.ipo_rank) : '–'}/100 (smaller, calmer listings first; queued by it inside the group)`}>
           IPO {r.ipo_tier}{r.ipo_rank != null && <> · {Math.round(r.ipo_rank)}</>}</span>)}{' '}

@@ -163,7 +163,20 @@ def build_report(market: dict, scan: dict, transitions: list[dict], new_today: l
                  + ", ".join(f"{c.symbol} ({c.score:.0f})" for c in scan["breadth_blocked"]) + ".")
 
     sm = scan.get("sme_momentum") or {}
-    L += ["", "## 4b. SME momentum watch (research only, never actionable)", ""]
+    buy = sm.get("buy") or {}
+    L += ["", f"## 4b. SME buy signals (bull clock {buy.get('clock', '–')})", ""]
+    if buy.get("signals"):
+        L.append(_table(["Status", "Symbol", "Breakout", "Pivot ₹", "Close ₹", "Vol", "Liquidity ₹cr"],
+                        [[r["status"], r["symbol"], f"{r['breakout_date']} ({r['sessions_ago']}d)", f"{r['pivot']}",
+                          f"{r['close']}", f"{r['vratio']}x", f"{r['turnover_cr']}"] for r in buy["signals"]]))
+    else:
+        L.append("_No SME breakouts in the last 10 sessions._")
+    if buy.get("basing"):
+        L += ["", "Basing within 10% below the pivot: "
+              + ", ".join(f"{r['symbol']} (₹{r['pivot']})" for r in buy["basing"]) + "."]
+    if buy.get("note"):
+        L += ["", f"_{buy['note']}_"]
+    L += ["", "## 4c. SME momentum watch (research list, not a buy)", ""]
     if sm.get("names"):
         L.append(_table(["Symbol", "RS vs SME", "6m", "Close", "Liquidity ₹cr", "Turnover accel", "Off 52w high"],
                         [[n["symbol"], f"{n['rs_sme']:.0f}", f"{n['ret6m']:+.0%}", f"{n['close']}",

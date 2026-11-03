@@ -76,13 +76,13 @@ delisted before 2024 have no cap, so these comparisons are made on the known-cap
 - **Daily run** (via `next_bull_watch.run`): refreshes `ui_data/signal_ledger_market.json` with every episode of the last year, its A/S tags, and closes since the first signal.
 - **Your decisions** live only in `state/signal_ledger.json`, written by the UI and never touched by the daily run. For each episode: status (new/researching/wait/bought/passed/exited), note, buy and exit price/date, plus your slot count.
 - **The tab shows:**
-  - the queue in priority order, by evidence on the common yardstick (`setup_compare.py`, `nextbull_lab.py`): P1 Next Bull grade A+, P2 grade A, P3 IPO A, P4 IPO B, P5 grade B (clock not ready), P6 grade X (hard veto), P7 SME. A main-board episode is graded on its first signal, or on today's session while it is on today's list, with the fundamentals known that day; `?` on the grade = no fundamentals on file, so the fundamental vetoes were not checked. The small-cap / RS ≥ 95 tags are shown but no longer set the priority (as groups they did worse trade by trade);
+  - the queue in priority order, by evidence on the common yardstick (`setup_compare.py`, `nextbull_lab.py`): P1 Next Bull grade A+, P2 grade A, P3 IPO A, P4 SME BUY, P5 IPO B, P6 grade B (clock not ready), P7 grade X (hard veto). A main-board episode is graded on its first signal, or on today's session while it is on today's list, with the fundamentals known that day; `?` on the grade = no fundamentals on file, so the fundamental vetoes were not checked. The small-cap / RS ≥ 95 tags are shown but no longer set the priority (as groups they did worse trade by trade);
   - free slots;
   - for holdings: return and the trailing stop (close 50% below the highest close since your buy, on split-adjusted closes), with an alert when it is hit;
   - expired episodes.
 - **Pass notes are deliberate data:** later they let us test whether fundamental filters add lift.
-- **IPO buy signals** (tagged IPO A / IPO B, priority P3 / P4, ids `IPO.<symbol>:<signal date>`): `ipo_watch.py` writes `ui_data/signal_ledger_ipo.json`, one episode per IPO breakout that passed the IPO lab's rule on its signal day (tier, listing gain < 30%, bull clock that day). "On list" = inside the 10-session buy window under today's clock. "+ Ledger" is on the IPO Watch table. They queue after grades A+ / A and ahead of grades B / X, where they sit on the common yardstick.
-- **SME episodes** (tagged SME, priority P7, ids `SME.<symbol>:<date>`): the daily scan writes `ui_data/signal_ledger_sme.json` from the SME momentum rule (`sme_watch.signal_frame`, RS vs SME peers ≥ 90) with the same episode rules. They are research only and never actionable, so they sort last, have no market cap, tier or Dossier, and get "+ Ledger" from the Candidates SME momentum table. A bought SME name uses the same trailing stop and takes a slot.
+- **IPO buy signals** (tagged IPO A / IPO B, priority P3 / P5, ids `IPO.<symbol>:<signal date>`): `ipo_watch.py` writes `ui_data/signal_ledger_ipo.json`, one episode per IPO breakout that passed the IPO lab's rule on its signal day (tier, listing gain < 30%, bull clock that day). "On list" = inside the 10-session buy window under today's clock. "+ Ledger" is on the IPO Watch table. They queue where they sit on the common yardstick: IPO A after grades A+ / A, IPO B after the SME BUY.
+- **SME episodes** (tagged SME, priority P4, ids `SME.<symbol>:<breakout date>`): the daily scan writes `ui_data/signal_ledger_sme.json` from the SME BUY rule (`sme_watch.buy_frame`, below). "On list" = within 10 sessions of the breakout while the bull clock still qualifies. "+ Ledger" is on the Candidates tab's SME buy signals table. They have no market cap, grade or Dossier. A bought SME name uses the same trailing stop and takes a slot. (Until 3 Nov 2026 SME episodes came from the momentum research list; none had a decision.)
 
 **Biggest past baggers.** `python bear_reversal/bagger_history.py` writes `docs/BIGGEST_BAGGERS.md`: the top buyable bottom→peak runs (`--top 50` now) (peak within 3 years) since 2014, when the BAGGER SIGNAL first fired in each and how much was left, why it missed the others, and a blank fundamentals worksheet per stock. It refuses to overwrite that file once you have filled it in (`--force` / `--out PATH`).
 
@@ -176,6 +176,44 @@ structural stop. Watch names show what a breakout needs: price and volume ratio,
   actionable**. The old relaxed-liquidity SME watch is retired. SME stocks above the ₹2cr gate
   still join the main lists as sector "SME", watch-only.
 
+### SME BUY rule (`sme_bull_lab.py`, 3 Nov 2026)
+
+`sme_bull_lab.py` scores SME rules on the same trade as `setup_compare.py` (buy at the signal
+close, 50% trailing stop or 2 years, one trade per episode) for signals from March 2020, split
+into 2020-22 (post-covid run + 2022 washout) and 2023-24 (the 2023 run); 2025 entries get a
+1-year view. Results: `reports/SME_BULL_LAB.md`.
+
+- **The bull clock decides.** All eligible SMEs, sampled quarterly: 2023-24 median trade −20%;
+  with the main-market clock in washout / early bull, +32%. An SME-only clock (SME breadth)
+  never reached washout before 2025, so it adds nothing.
+- **The rule:** an SME listed over a year closes above its prior 1-year closing high on ≥ 1.5x
+  its 50-day median volume, while the clock reads washout / early bull; liquidity ≥ ₹10 lakh a
+  day, traded on ≥ 80% of sessions, price ≥ ₹5. First-year SMEs are the IPO watch's rule A.
+
+  | SME BUY (clock washout / early bull) | 2020-22 | 2023-24 | 2025 entries, after 1 year |
+  |---|---|---|---|
+  | Trades | 8 | 25 | 66 |
+  | Median trade | +64% | +62% | −6% (all SMEs −27%) |
+  | Doubled within 2 years | 75% | 68% | – |
+
+- **Outside the clock** the same breakouts lost in 2023-24 (median −22%), though in 2020-22
+  they made +157% (nearly every SME rose). Adding broad bull to the clock cut 2023-24 to −7%.
+- **Nothing else held.** Extension, RS, base width, tight range, price, liquidity, turnover
+  acceleration, breakout volume and fundamentals were all "too few trades" to judge in both
+  periods, so none was added. Buying 5 or 10 sessions after the breakout still paid, a little
+  less (2023-24 median +54% / +50%).
+- **Breakouts that slip back.** Bought 3-10 sessions late while 0-10% below the pivot did no
+  worse in 2023-24 (median +37% to +96%, 5-7 trades) and mixed in 2025, so they stay buys. A
+  close more than 10% back below the pivot never happened in 2020-24; the 3 cases in 2025 lost
+  ~73% in a year. Such a breakout is marked FAILED and leaves the buy list (`SLIP_MAX`): the
+  rule has no evidence there, not proof that it fails.
+- **Limits:** a small sample (33 full trades), mostly from the 2022 washout into the 2023 run;
+  2025's early-bull clock was not followed by an SME run. SMEs trade in lots and can sit at
+  circuit limits, so a 50% trailing stop can fill well below the stop.
+- **Live:** `sme_watch.run` adds `buy` (breakouts of the last 10 sessions — BUY when the clock
+  qualifies — and seasoned names basing within 10% below their pivot) to the scan; the
+  Candidates tab shows it above the momentum list. The momentum list stays as research.
+
 ## IPOs (`ipo_data.py`, `ipo_lab.py`, `ipo_watch.py`, IPO Watch tab, 2 Nov 2026)
 
 - **Data:** NSE's past-issue list (main board + SME Emerge, issue price, listing date) matched
@@ -206,7 +244,7 @@ structural stop. Watch names show what a breakout needs: price and volume ratio,
     outcomes; base depth, time to breakout, price vs issue and strength vs the Nifty 500 did
     not. The better half did better overall (SME: doubled within 2y 76% vs 60%, 5x 37% vs
     10%), mostly from signals up to 2022; since 2023 the gap is small. The ledger queues IPO
-    episodes by the same rank inside P3 / P4.
+    episodes by the same rank inside P3 / P5.
   - Clock "early bull" also fired in 2025 without a run following (those entries are not yet
     2 years old). SMEs trade in lots and can be hard to exit; the rule has no extension filter.
 

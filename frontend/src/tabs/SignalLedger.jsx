@@ -72,8 +72,8 @@ export default function SignalLedger({ onOpen }) {
     <div>
       <h1>Signal Ledger</h1>
       <div className="small">every BAGGER SIGNAL episode of the last year, plus IPO buy signals
-        (<span className="pill green">IPO A/B</span>) and SME momentum episodes
-        (<span className="pill amber">SME</span>, research only), your decision on each, and the exit
+        (<span className="pill green">IPO A/B</span>) and SME buy signals
+        (<span className="pill amber">SME</span>), your decision on each, and the exit
         rule on what you hold · data as of {data.as_of}
         {data.sme_as_of && data.sme_as_of !== data.as_of && <> (SME {data.sme_as_of})</>} · no AI, nothing
         leaves this machine</div>
@@ -161,8 +161,9 @@ export default function SignalLedger({ onOpen }) {
         )}
       </div>
       <div className="small" style={{ marginTop: 6 }}>
-        Dossier is available while a main-board name is on today&apos;s list · SME episodes come from the SME
-        momentum watch (RS vs SME peers ≥ 90) and have no market cap · IPO episodes are breakouts that passed
+        Dossier is available while a main-board name is on today&apos;s list · SME episodes are SME BUY signals
+        (breakout to a 1-year high on 1.5x volume, listed over a year, clock washout / early bull; &quot;on list&quot; = within
+        10 sessions of the breakout) and have no market cap · IPO episodes are breakouts that passed
         the IPO lab&apos;s rule on their signal day (IPO Watch tab); &quot;on list&quot; = within the 10-session buy window · expired = left the list over {data.rules.live}{' '}
         sessions ago with no decision · prices are as quoted; returns and stops use split-adjusted closes
       </div>

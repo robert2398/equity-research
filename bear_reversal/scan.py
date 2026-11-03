@@ -263,9 +263,9 @@ def run_scan(dao: DataAccess, market: dict) -> dict:
     except Exception as e:
         print(f"  sme cohort skipped: {type(e).__name__}: {e}")
 
-    # ---- SME momentum watch (sme_watch.py, chosen by sme_lab.py): research only, never
-    # actionable. Replaces the old relaxed-liquidity bear-reversal SME watch, which fired 22
-    # times in six years of SME history.
+    # ---- SME watch (sme_watch.py): the SME BUY rule (sme_bull_lab.py) under "buy", plus the
+    # momentum research list (sme_lab.py, not a buy). Replaces the old relaxed-liquidity
+    # bear-reversal SME watch, which fired 22 times in six years of SME history.
     sme_watch: list[Candidate] = []
     try:
         from sme_watch import run as _sme_momentum

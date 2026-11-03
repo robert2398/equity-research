@@ -5,17 +5,20 @@ Why: the daily signal list flickers (median streak 3 sessions, 68% of names come
 not the day. An episode starts on the first signal after 60 quiet sessions and stays LIVE
 for 60 sessions after its last signal.
 
-SME stocks get their own episodes (board "sme", ids "SME.<symbol>:<date>") from the SME
-momentum watch (sme_watch.py: RS rank vs SME peers >= 90). They are research only, never
-actionable, so they sort last (priority 7) and carry an SME tag.
+Queue order, by evidence on the common yardstick (buy at the signal close, 50% trailing stop or
+2 years): P1 grade A+, P2 grade A, P3 IPO rule A, P4 SME BUY, P5 IPO rule B, P6 grade B, P7 grade X.
 
 Main-board episodes queue by their Next Bull grade (nextbull_lab.grade, computed on the first
-signal, or today while on today's list): P1 A+, P2 A, P5 B (clock not ready), P6 X (hard veto).
+signal, or today while on today's list).
+
+SME stocks get their own episodes (board "sme", ids "SME.<symbol>:<breakout date>") from the SME
+BUY rule (sme_watch.buy_frame, tested in sme_bull_lab.py): a breakout to a 1-year closing high on
+>= 1.5x volume by an SME listed over a year, while the bull clock reads washout / early bull. On
+the list for 10 sessions after the breakout. Tagged SME.
 
 IPO buy signals (ipo_watch.py, board "ipo", ids "IPO.<symbol>:<signal date>") are one episode
-per IPO breakout that passed the IPO lab's rule on its signal date: priority 3 for rule A
-(SME board), 4 for rule B (main board < Rs 5,000 cr). On the common yardstick
-(setup_compare.py) both beat grades B and X, so they queue after A+ / A and before those.
+per IPO breakout that passed the IPO lab's rule on its signal date (rule A: SME board, rule B:
+main board < Rs 5,000 cr).
 
 Files, so the daily run never touches your decisions:
   ui_data/signal_ledger_market.json   written by the daily run (write_market): episodes,
@@ -66,19 +69,20 @@ OPEN = ("NEW", "RESEARCHING", "WAIT")
 # trade by trade (P1 median -19%), so they are tags only now.
 PRIORITY = {1: ("grade A+", "median +45% · 58% doubled in 2y (112 trades)"),
             2: ("grade A", "median +38% · 54% doubled in 2y (154 trades)"),
-            5: ("grade B — clock not ready, wait", "median −19% · 32% doubled in 2y (263 trades)"),
-            6: ("grade X — hard veto, skip", "median −10% · 39% doubled in 2y (522 trades)")}
-GRADE_PRIORITY = {"A+": 1, "A": 2, "B": 5, "X": 6}
-UNGRADED = 5         # grade could not be computed: wait, like B
-IPO_PRIORITY = {"A": 3, "B": 4}
-SME_PRIORITY = 7
+            6: ("grade B — clock not ready, wait", "median −19% · 32% doubled in 2y (263 trades)"),
+            7: ("grade X — hard veto, skip", "median −10% · 39% doubled in 2y (522 trades)")}
+GRADE_PRIORITY = {"A+": 1, "A": 2, "B": 6, "X": 7}
+UNGRADED = 6         # grade could not be computed: wait, like B
+IPO_PRIORITY = {"A": 3, "B": 5}
+SME_PRIORITY = 4
 SME_RULE = {"priority": SME_PRIORITY,
-            "group": "momentum (RS vs SME peers ≥ 90) — research only, never actionable",
-            "hit2x": "34% / 20% doubled within a year (2023-24 / 2025-26)",
-            "note": "median trailing-stop trade still lost (-18% / -12%); SMEs trade in lots"}
+            "group": "SME BUY: breakout to a 1-year high on ≥ 1.5x volume, listed > 1 year, clock washout / early bull",
+            "hit2x": "median +62% / +64% · 68% / 75% doubled in 2y (2023-24 / 2020-22, 25 / 8 trades)",
+            "note": "small sample (reports/SME_BULL_LAB.md); 2025 entries -6% after a year vs -27% for all "
+                    "SMEs; SMEs trade in lots and can hit circuit limits"}
 IPO_RULE = {"A": {"priority": 3, "group": "SME board breakout after a calm listing",
                   "hit2x": "median +42% · 69% doubled in 2y (88 trades, gains concentrated in 2021-22)"},
-            "B": {"priority": 4, "group": "main board < ₹5,000cr breakout in an early bull",
+            "B": {"priority": 5, "group": "main board < ₹5,000cr breakout in an early bull",
                   "hit2x": "median +19% · 54% doubled in 2y (37 trades, weaker evidence)"}}
 _lock = threading.Lock()
 
@@ -211,12 +215,12 @@ def write_market(panel, i: int | None = None) -> Path:
 
 
 def write_sme_market(as_of=None) -> Path:
-    """SME episodes from the SME momentum rule (sme_watch.signal_frame), as of a date."""
+    """SME episodes from the SME BUY rule (sme_watch.buy_frame), as of a date."""
     import pandas as pd
     from sme_data import load
-    from sme_watch import signal_frame
+    from sme_watch import buy_frame
     w = load()
-    sig, rs = signal_frame(w)
+    sig, rs = buy_frame(w)
     dates, cols = sig.index, sig.columns
     i = len(dates) - 1 if as_of is None else int(dates.searchsorted(pd.Timestamp(as_of), "right")) - 1
     c = w["close"].reindex(columns=cols).to_numpy()

@@ -23,8 +23,8 @@ def test_episodes_split_on_quiet_gap():
 def test_priority_order():
     main = [sl._priority({"board": "main", "grade": g}) for g in ("A+", "A", "B", "X", None)]
     ipo = [sl._priority({"board": "ipo", "ipo_tier": t}) for t in ("A", "B")]
-    assert main == [1, 2, 5, 6, sl.UNGRADED] and ipo == [3, 4]
-    assert sl._priority({"board": "sme"}) == sl.SME_PRIORITY == 7
+    assert main == [1, 2, 6, 7, sl.UNGRADED] and ipo == [3, 5]
+    assert sl._priority({"board": "sme"}) == sl.SME_PRIORITY == 4
     assert sl._priority({"grade": "A+"}) == 1                    # board defaults to main
 
 
@@ -139,7 +139,7 @@ def test_view_merges_sme_market(tmp_path, monkeypatch):
     by = {r["id"]: r for r in v["rows"]}
     assert by["SME.ABC:2026-01-02"]["sme"] and by["SME.ABC:2026-01-02"]["priority"] == sl.SME_PRIORITY
     assert not by["ABC:2026-01-01"]["sme"] and by["ABC:2026-01-01"]["priority"] == sl.UNGRADED
-    assert v["rows"][-1]["sme"] and v["counts"]["sme"] == 1 and v["sme_as_of"] == "2026-01-05"
+    assert v["rows"][0]["sme"] and v["counts"]["sme"] == 1 and v["sme_as_of"] == "2026-01-05"
     assert "sme" in v["rules"]
     # buying the SME episode uses the SME market's price and date, and records the board
     v = sl.set_entry("SME.ABC:2026-01-02", {"status": "BOUGHT"})
