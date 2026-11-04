@@ -177,6 +177,13 @@ def export(candidates: dict | None = None) -> Path:
 
     path = UI_DIR / "bundle.json"
     path.write_text(json.dumps(_clean(bundle), allow_nan=False, default=str), encoding="utf-8")
+    # The broad-market table has its own source dates and eligible denominators.
+    # Keep it independent from the current scanner cohort and candidate gates.
+    try:
+        from breadth_history import run as export_breadth_history
+        export_breadth_history()
+    except Exception as exc:
+        print(f"breadth history skipped: {type(exc).__name__}: {exc}")
     return path
 
 

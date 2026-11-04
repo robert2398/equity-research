@@ -4,6 +4,14 @@ export async function fetchBundle() {
   return r.json();
 }
 
+/** Broad NSE participation history and recovery-confirmation progress. */
+export async function fetchBreadthHistory() {
+  const r = await fetch('/api/breadth-history', { cache: 'no-store' });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error('Breadth history is temporarily unavailable.');
+  return r.json();
+}
+
 /** Candles since 2014 for any NSE stock; tf 'D' (daily) or 'W' (weekly bars). */
 export async function fetchStock(symbol, asOf = null, tf = 'D') {
   const q = new URLSearchParams();

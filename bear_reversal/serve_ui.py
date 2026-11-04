@@ -5,6 +5,7 @@
 Serves:
   /                      -> frontend/dist (built React app)
   /api/bundle            -> ui_data/bundle.json
+  /api/breadth-history   -> eight-week breadth table and recovery confirmation
   /api/stock/<SYMBOL>[?tf=W&asof=] -> candles (daily or weekly, since 2014, any NSE stock) +
                              MAs + RS vs benchmarks (full-market panel; Kite store fallback; from the
                              shared parquet store, read-only)
@@ -362,6 +363,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, p.read_bytes(), "application/json")
             else:
                 self._json({"error": "bundle missing — run python bear_reversal/ui_export.py"}, 404)
+            return
+        if path == "/api/breadth-history":
+            p = UI_DATA / "breadth_history.json"
+            if p.exists():
+                self._send(200, p.read_bytes(), "application/json")
+            else:
+                self._json({"error": "breadth history missing — run python bear_reversal/breadth_history.py"}, 404)
             return
         m = re.match(r"^/api/replay/?$", path)
         if m:
