@@ -1,0 +1,72 @@
+# Initial research rules. This assistant never places broker orders.
+version: fno-v1
+data:
+  db_path: data/fno/assistant.sqlite3
+  daily_days: 220
+  hourly_days: 100
+  minute_days: 40
+  benchmark: NIFTY 50
+  finalization_seconds: 3
+  max_bar_age_seconds: 420
+session:
+  open: '09:15'
+  continuous_close: '15:15'  # F&O cash-underlying continuous session, before CAS
+  entry_start: '09:35'
+  last_entry: '14:30'
+  flat_at: '15:10'
+trend:
+  ema_fast: 20
+  ema_slow: 50
+  slope_bars: 3
+  min_slope_atr: 0.10
+  min_hourly_bars: 250
+  min_daily_bars: 100
+  require_daily_alignment: true
+  decision_sessions: 10
+setup:
+  rvol_sessions: 20
+  min_rvol_sessions: 10
+  pullback_rvol: 1.3
+  breakout_rvol: 1.5
+  min_rr: 1.8
+  max_signal_atr: 1.8
+  entry_buffer_atr: 0.05
+  stop_buffer_atr: 0.10
+  chase_atr: 0.25
+  entry_valid_bars: 2
+contracts:
+  max_quote_age_seconds: 5
+  max_trade_age_seconds: 120
+  max_spread_pct: 1.0
+  delta_min: 0.50
+  delta_max: 0.70
+  min_days_to_expiry: 1
+  risk_free_rate: 0.06      # model assumption, not an observed financing rate
+  iv_drop: 0.03            # conservative 3-vol-point scenario; not a forecast
+  scenario_minutes: 30
+  depth_participation: 0.25
+  cost_move_max_fraction: 0.15
+  charges_roundtrip_per_lot_inr: 100.0  # configurable conservative estimate, not a tax schedule
+  slippage_pct: 0.10
+risk:
+  reference_capital: 1000000.0  # paper sizing reference, not your account balance
+  per_trade_pct: 0.25
+  max_open_risk_pct: 0.50
+  max_premium_pct: 3.0
+  max_total_premium_pct: 6.0
+  daily_loss_pct: 1.0
+  daily_loss_r: 3
+  max_positions: 2
+  one_per_sector: true
+  premium_stop_pct: 25.0
+  max_hold_minutes: 180
+  progress_minutes: 20
+  min_progress_r: 0.5
+  cooldown_minutes: 15
+eligibility:
+  require_event_review: true
+  require_calendar: true
+  underlying_quote_age_seconds: 10
+  feed_age_seconds: 20
+  min_score: 80
+  top_n: 3

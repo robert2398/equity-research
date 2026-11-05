@@ -18,6 +18,7 @@ import json
 import logging
 import threading
 import time
+import time
 import webbrowser
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -76,9 +77,14 @@ def _wait_for_callback(host: str, port: int, timeout_s: int = 600) -> str:
     _CallbackHandler.error = None
     server = HTTPServer((host, port), _CallbackHandler)
     server.timeout = timeout_s
+    deadline = time.monotonic() + timeout_s
     log.info("Waiting up to %ss for Kite redirect on http://%s:%s ...", timeout_s, host, port)
     try:
         while _CallbackHandler.request_token is None and _CallbackHandler.error is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            server.timeout = remaining
             server.handle_request()
     finally:
         server.server_close()

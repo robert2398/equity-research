@@ -13,9 +13,11 @@ import BigMovers from './tabs/BigMovers.jsx';
 import NextBullWatch from './tabs/NextBullWatch.jsx';
 import SignalLedger from './tabs/SignalLedger.jsx';
 import IpoWatch from './tabs/IpoWatch.jsx';
+import FnoAssistant from './tabs/FnoAssistant.jsx';
 
 const SECTIONS = [
   ['Live', [
+    ['fno', 'F&O Assistant'],
     ['overview', 'Overview'], ['nbull', 'Next Bull Watch'], ['ipo', 'IPO Watch'], ['ledger', 'Signal Ledger'], ['breadth', 'Market Breadth'], ['sectors', 'Sectors'],
     ['movers', 'Top Movers'], ['detail', 'Stock Detail'], ['candidates', 'Candidates'],
   ]],
@@ -26,7 +28,7 @@ const SECTIONS = [
 const LABEL = Object.fromEntries(SECTIONS.flatMap(([, items]) => items));
 
 export default function App() {
-  const [tab, setTab] = useState('overview');
+  const [tab, setTab] = useState(() => window.location.hash === '#fno' ? 'fno' : 'overview');
   const [bundle, setBundle] = useState(null);
   const [error, setError] = useState(null);
   const [focus, setFocus] = useState(null);   // symbol chosen anywhere -> Detail
@@ -73,10 +75,22 @@ export default function App() {
     }
   }, [tab]);
   const goBack = () => window.history.back();    // -> popstate above (also the browser's Back)
-  const goTab = (id) => { setFrom(null); setTab(id); };
+  const goTab = (id) => {
+    setFrom(null);
+    setTab(id);
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${id === 'fno' ? '#fno' : ''}`);
+  };
 
   const page = (id) => {
+    if (id !== 'fno' && !bundle) {
+      return <div className="panel">
+        <h1>{LABEL[id]}</h1>
+        <p className="mut">{error || 'Loading daily scanner data...'}</p>
+        <button type="button" className="btn" onClick={() => goTab('fno')}>Open F&O Assistant</button>
+      </div>;
+    }
     switch (id) {
+      case 'fno': return <FnoAssistant />;
       case 'nbull': return <NextBullWatch onOpen={openStock} />;
       case 'ledger': return <SignalLedger onOpen={openStock} />;
       case 'ipo': return <IpoWatch onOpen={openStock} />;
@@ -96,15 +110,12 @@ export default function App() {
   };
   const mounted = tab === 'detail' && from ? [from, 'detail'] : [tab];
 
-  if (error) return <div className="loading">{error}</div>;
-  if (!bundle) return <div className="loading">loading bundle…</div>;
-
   return (
     <div className="app">
       <aside className="sidebar">
         <div className="logo">Bear-Market Reversal<small>NSE daily scanner</small></div>
         <div className="small" style={{ marginTop: 6 }}>
-          data as of<br /><b>{bundle.as_of}</b>
+          daily data as of<br /><b>{bundle?.as_of || (error ? 'Unavailable' : 'Loading...')}</b>
         </div>
         <nav className="nav">
           {SECTIONS.map(([section, items]) => (

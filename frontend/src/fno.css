@@ -1,0 +1,78 @@
+.fno-assistant { min-width: 0; }
+.fno-title-row, .fno-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.fno-title-row { margin-bottom: 12px; }
+.fno-title-row .sub { margin-bottom: 0; }
+.fno-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.fno-subnav { display: flex; gap: 8px; padding: 8px 0 12px; position: sticky; top: 0; background: var(--bg); z-index: 5; flex-wrap: wrap; }
+.fno-run-help { margin: 0 0 12px; font-size: 12px; line-height: 1.6; }
+.fno-run-help summary { cursor: pointer; font-weight: 650; }
+.fno-run-help p { margin: 9px 0 5px; color: var(--muted); }
+.fno-run-help code { display: inline-block; padding: 3px 7px; border-radius: 5px; color: #a7c7ff; background: var(--bg); overflow-wrap: anywhere; }
+#fno-scanner, #fno-stock-charts, #fno-paper-ledger, #fno-paper-order { scroll-margin-top: 65px; }
+.fno-chart-title { margin: 12px 0 10px; }
+.fno-chart-title h2 { outline: none; }
+.fno-alert { border: 1px solid var(--border); border-radius: 9px; padding: 11px 14px; margin-bottom: 12px; background: var(--panel); }
+.fno-alert.healthy { border-color: #2b6544; }
+.fno-alert.attention { border-color: #69502b; }
+.fno-alert.error { border-color: #7c2b41; color: #ff9ab3; }
+.fno-alert p { margin: 7px 0 0; }
+.fno-alert ul { padding-left: 18px; margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.fno-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--amber); margin-right: 6px; }
+.healthy .fno-dot { background: var(--green); }
+.fno-stats { margin-bottom: 14px; }
+.fno-two-up { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.fno-section-head h2 { margin: 0; }
+.fno-candidates { padding: 13px 12px; min-width: 0; }
+.fno-candidates.fno-ce { border-top-color: var(--green); }
+.fno-candidates.fno-pe { border-top-color: var(--red); }
+.fno-candidates table { margin-top: 10px; }
+.fno-candidates td { padding: 8px 5px; }
+.fno-candidates th { padding: 6px 5px; cursor: default; }
+.fno-candidates td .small { margin-top: 4px; font-size: 10px; }
+.fno-scroll { max-width: 100%; overflow-x: auto; }
+.fno-symbol { border: 0; padding: 2px 0; color: #7db1ff; background: transparent; font: inherit; font-weight: 650; cursor: pointer; text-align: left; }
+.fno-symbol:hover { text-decoration: underline; }
+.fno-symbol:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.fno-empty { min-height: 75px; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; text-align: center; line-height: 1.6; padding: 10px; }
+.fno-timing { margin: 10px 0 15px; line-height: 1.5; }
+.fno-detail { margin-bottom: 12px; }
+.fno-detail-facts { margin-top: 12px; }
+.fno-reasons { margin: 12px 0; padding-left: 18px; color: var(--muted); font-size: 12px; line-height: 1.65; }
+.fno-contract { display: flex; flex-wrap: wrap; gap: 8px 16px; border-top: 1px solid var(--border); padding-top: 11px; font-size: 12px; line-height: 1.6; }
+.fno-contract span { color: var(--muted); }
+.fno-expiry { margin-top: 9px; }
+.fno-charts { margin-bottom: 12px; }
+.fno-chart { padding: 12px 10px; min-width: 0; }
+.fno-chart .fno-section-head { padding: 0 3px 10px; }
+.fno-chart .fno-empty { min-height: 280px; }
+.fno-chart-hidden { display: none; }
+.fno-chart-key { padding: 5px 4px 0; }
+.fno-chart-key span { margin-right: 12px; }
+.fno-chart-key span:nth-child(1) { color: #4f8cff; }
+.fno-chart-key span:nth-child(2) { color: #f2a33c; }
+.fno-chart-key span:nth-child(3) { color: #bc83e5; }
+.fno-start { margin-bottom: 14px; line-height: 1.5; }
+.fno-start code { display: block; width: fit-content; padding: 6px 10px; border-radius: 5px; background: var(--bg); margin: 5px 0; color: #a7c7ff; font-size: 12px; }
+.fno-trades, .fno-watch, .fno-history { margin-top: 12px; }
+.fno-trades table, .fno-history table { margin-top: 10px; }
+.fno-reason-cell { white-space: normal; text-align: left; min-width: 180px; max-width: 380px; font-size: 11px; color: var(--muted); line-height: 1.5; }
+.fno-watch summary, .fno-history summary { cursor: pointer; font-weight: 650; }
+.fno-watch summary .small, .fno-history summary .small { margin-left: 10px; font-weight: 400; }
+.fno-fill { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
+.fno-paper-buy { margin-bottom: 12px; border-color: #36577b; }
+.fno-paper-quotes { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; margin: 10px 0; line-height: 1.6; }
+.fno-contract-select { grid-column: span 2; }
+.fno-ledger-summary { display: flex; gap: 10px 22px; flex-wrap: wrap; margin: 12px 0; }
+.fno-ledger-summary span { color: var(--muted); font-size: 12px; }
+.fno-ledger-summary b { margin-left: 5px; }
+.fno-ledger-tools { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.fno-ledger-buy { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.fno-ledger-buy select { max-width: 240px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 6px; }
+.fno-watch-row { cursor: pointer; }
+.fno-watch-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.fno-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 10px; margin: 12px 0; }
+.fno-form-grid label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 12px; }
+.fno-form-grid input, .fno-form-grid select { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 8px; font: inherit; }
+.fno-form-grid input:focus, .fno-form-grid select:focus { outline: 1px solid var(--accent); }
+@media (max-width: 1100px) { .fno-two-up { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 650px) { .fno-title-row { align-items: flex-start; } .fno-actions .small { display: none; } .fno-form-grid { grid-template-columns: minmax(0, 1fr); } .fno-contract-select { grid-column: span 1; } }

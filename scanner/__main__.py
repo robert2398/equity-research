@@ -13,6 +13,9 @@ def main(argv=None):
                                      description="NSE Sector Rotation & Trend Leadership Scanner")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
+    from .fno.cli import add_parser as add_fno_parser
+    add_fno_parser(sub)
+
     p_auth = sub.add_parser("auth", help="Kite Connect session management")
     auth_sub = p_auth.add_subparsers(dest="auth_cmd", required=True)
     auth_sub.add_parser("login", help="Interactive manual login (browser)")
@@ -55,6 +58,14 @@ def main(argv=None):
 
     args = parser.parse_args(argv)
     setup_logging()
+
+    if args.cmd == "fno":
+        from .fno.cli import dispatch
+        try:
+            return dispatch(args)
+        except (ValueError, RuntimeError, OSError) as error:
+            print(f"F&O assistant: {error}", file=sys.stderr)
+            return 1
 
     if args.cmd == "auth":
         from . import auth

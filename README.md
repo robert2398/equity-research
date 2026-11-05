@@ -1,5 +1,7 @@
 # NSE Sector Rotation & Trend Leadership Scanner
 
+The intraday **F&O Assistant** adds hourly trend filtering, 5-minute CE/PE setups, live monitoring and a paper/manual ledger. Start with [the setup and operating guide](docs/FNO_ASSISTANT.md) and open the dashboard at `http://localhost:8123/#fno`.
+
 A complete, working **Sector Rotation + Early Stage 2 + Trend Continuation/Resumption Scanner** for Indian NSE equities, built on official Zerodha Kite Connect and NSE Indices data.
 
 **Purpose:** identify sectors and stocks where fresh upward momentum is emerging — after a decline and basing period, after sideways consolidation, after a pause inside an advancing trend, or after a pullback inside an advancing trend — for short/medium-term swing consideration (≈2–12 weeks), without chasing overextended moves.

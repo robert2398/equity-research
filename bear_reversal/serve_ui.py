@@ -52,6 +52,13 @@ MIME = {".html": "text/html", ".js": "text/javascript", ".css": "text/css",
 _cache: dict = {}
 
 
+def _fno_service():
+    if "fno_service" not in _cache:
+        from scanner.fno.service import FnoService
+        _cache["fno_service"] = FnoService()
+    return _cache["fno_service"]
+
+
 def _dao():
     if "dao" not in _cache:
         from data_access import DataAccess
@@ -321,6 +328,36 @@ class Handler(BaseHTTPRequestHandler):
         import urllib.parse as _up
         parsed = _up.urlparse(self.path)
         path = urllib.parse.unquote(parsed.path)
+        if path.startswith("/api/fno/"):
+            try:
+                body = self._body()
+                origin = self.headers.get("Origin")
+                if origin and urllib.parse.urlparse(origin).hostname not in ("localhost", "127.0.0.1", "::1"):
+                    self._json({"error": "Local requests only"}, 403)
+                    return
+                if "application/json" not in (self.headers.get("Content-Type") or ""):
+                    raise ValueError("Content-Type application/json is required")
+                if not isinstance(body, dict):
+                    raise ValueError("JSON object expected")
+                service = _fno_service()
+                close = re.fullmatch(r"/api/fno/trades/([a-fA-F0-9]{32})/close", path)
+                if path == "/api/fno/scan":
+                    self._json(service.scan())
+                elif path == "/api/fno/trades/open":
+                    self._json(service.open_trade(body))
+                elif path == "/api/fno/paper/open":
+                    self._json(service.open_paper_trade(body))
+                elif close:
+                    self._json(service.close_trade(close.group(1), body))
+                else:
+                    self._json({"error": "not found"}, 404)
+            except KeyError as error:
+                self._json({"error": str(error).strip("'\"")}, 404)
+            except (ValueError, TypeError) as error:
+                self._json({"error": str(error)}, 400)
+            except Exception as error:
+                self._json({"error": f"F&O service unavailable: {type(error).__name__}"}, 503)
+            return
         ml = re.match(r"^/api/ledger/([A-Za-z0-9&\-_.]{1,30}:\d{4}-\d{2}-\d{2})$", path)
         if ml or path == "/api/ledger-settings":
             import signal_ledger
@@ -357,6 +394,30 @@ class Handler(BaseHTTPRequestHandler):
         parsed = _up.urlparse(self.path)
         path = urllib.parse.unquote(parsed.path)
         qs = _up.parse_qs(parsed.query)
+        if path.startswith("/api/fno/"):
+            try:
+                service = _fno_service()
+                chart = re.fullmatch(r"/api/fno/chart/([A-Za-z0-9&_.+\-]{1,40})", path)
+                contracts = re.fullmatch(r"/api/fno/contracts/([A-Za-z0-9&_.+\-]{1,40})", path)
+                if path == "/api/fno/status":
+                    self._json(service.status())
+                elif path == "/api/fno/candidates":
+                    self._json(service.candidates())
+                elif path == "/api/fno/trades":
+                    self._json(service.trades())
+                elif chart:
+                    self._json(service.chart(chart.group(1), qs.get("interval", ["5minute"])[0]))
+                elif contracts:
+                    self._json(service.paper_contracts(contracts.group(1), qs.get("side", ["CE"])[0]))
+                else:
+                    self._json({"error": "not found"}, 404)
+            except KeyError as error:
+                self._json({"error": str(error).strip("'\"")}, 404)
+            except ValueError as error:
+                self._json({"error": str(error)}, 400)
+            except Exception as error:
+                self._json({"error": f"F&O service unavailable: {type(error).__name__}"}, 503)
+            return
         if path == "/api/bundle":
             p = UI_DATA / "bundle.json"
             if p.exists():

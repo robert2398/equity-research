@@ -25,6 +25,8 @@ __pycache__/
 .venv/
 .pytest_cache/
 .pytest_tmp/
+.fno-test*/
+.fno-pytest-cache*/
 build/
 dist/
 *.egg-info/
