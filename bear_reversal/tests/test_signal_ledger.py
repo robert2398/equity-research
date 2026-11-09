@@ -104,6 +104,39 @@ def test_bear_actionable_breakouts_join_queue_using_trigger_date(ledger):
     assert row["position"]["last_close"] == 28 and not row["on_list_today"]
 
 
+def test_queue_ages_match_each_scanner_calendar(ledger):
+    import pandas as pd
+    episode, write, dates = ledger
+    write([episode("MAIN")])
+    # This source includes an extra session that the other scanner's data doesn't contain.
+    bear_dates = sorted(dates + ["2026-11-04"])
+    candles = {"BR": pd.DataFrame({"date": pd.to_datetime(bear_dates), "close": 20})}
+    sl.write_bear_market({"as_of": dates[-1], "actionable": [
+        {"symbol": "BR", "trigger_date": dates[1], "entry_close": 20}]}, candles, pd.to_datetime(bear_dates))
+    by = {r["symbol"]: r for r in sl.view()["rows"]}
+    assert by["MAIN"]["first_signal_age_sessions"] == 4 and by["MAIN"]["in_queue"]
+    assert by["BR"]["first_signal_age_sessions"] == 5 and not by["BR"]["in_queue"]
+
+
+def test_bear_holdings_preserve_quotes_when_candles_are_split_adjusted(ledger):
+    import pandas as pd
+    _, write, dates = ledger
+    write([])
+    cand = {"as_of": dates[-1], "actionable": [
+        {"symbol": "BR", "trigger_date": dates[1], "entry_close": 20}]}
+    candles = {"BR": pd.DataFrame({"date": pd.to_datetime(dates), "close": 20})}
+    sl.write_bear_market(cand, candles, pd.to_datetime(dates))
+    sl.set_entry(f"BEAR.BR:{dates[1]}", {"status": "BOUGHT"})
+    # Next session: a 2:1 split halves adjusted historical candles and the current quote.
+    dates = dates + ["2026-11-09"]
+    candles = {"BR": pd.DataFrame({"date": pd.to_datetime(dates), "close": 10})}
+    sl.write_bear_market({"as_of": dates[-1], "actionable": []}, candles, pd.to_datetime(dates))
+    row = sl.view()["rows"][0]
+    assert row["first_price"] == 20 and row["last_price"] == 10
+    assert row["position"]["ret"] == 0 and row["position"]["stop_price"] == 5
+    assert not row["position"]["stop_hit"]
+
+
 def test_comments_timestamp_history_and_latest_comment_row_order(ledger, monkeypatch):
     episode, write, _ = ledger
     write([episode("P1"), episode("P2", grade="A")])

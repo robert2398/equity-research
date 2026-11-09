@@ -350,20 +350,26 @@ def write_bear_market(candidates: dict, candles: dict, calendar) -> Path:
             ep["sessions_on"] += 1
         last = int(dates.searchsorted(last_on))
         df = candles.get(ep["symbol"])
+        old_dates = previous.get("dates", [])[ep.get("start", 0):]
+        old_raw = pd.Series(ep.get("raw", []), index=pd.to_datetime(old_dates[:len(ep.get("raw", []))]), dtype=float)
         if df is not None and not df.empty:
-            series = df.assign(date=pd.to_datetime(df["date"])).set_index("date")["close"]
+            indexed = df.assign(date=pd.to_datetime(df["date"])).set_index("date")
+            series = indexed["close"]
+            # Keep recorded quotes when adjusted candle history is rebased after a split.
+            raw_series = indexed["close_raw"] if "close_raw" in indexed else old_raw.combine_first(series)
         else:
-            old_dates = previous.get("dates", [])[ep.get("start", 0):]
             series = pd.Series(ep.get("close", []), index=pd.to_datetime(old_dates[:len(ep.get("close", []))]), dtype=float)
+            raw_series = old_raw
         prices = series.reindex(dates[b0:]).ffill()
+        raw_prices = raw_series.reindex(dates[b0:]).ffill()
         if prices.isna().all():
             continue  # no price history: keep the signal out of the ledger until data exists
         ep.update(board="bear", signal_kind="bear_breakout", first_mcap=None,
                   first_tier_a=False, first_small=False, tier_a_now=False, small_now=False,
-                  mcap_now=None, rs_now=None, first_price=_r(prices.iloc[0]),
+                  mcap_now=None, rs_now=None, first_price=ep.get("first_price") or _r(raw_prices.iloc[0]),
                   last_on=last_on, on_list_today=on_today, queue_current=on_today,
                   sessions_since_last=int(len(dates) - 1 - last), live=bool(len(dates) - 1 - last <= LIVE),
-                  start=b0, close=[_r(x) for x in prices], raw=[_r(x) for x in prices])
+                  start=b0, close=[_r(x) for x in prices], raw=[_r(x) for x in raw_prices])
         eps.append(ep)
     first = min((e["start"] for e in eps), default=len(dates) - 1)
     for ep in eps:
@@ -539,11 +545,12 @@ def view() -> dict:
     markets = _load_markets()
     m = markets[0]
     u = _load_user()
-    # The shared market calendar counts actual sessions, including holidays and thin IPOs.
+    # Count the source scanner's sessions; use newer market sessions to age stale snapshots.
     session_dates = sorted({d for mk in markets for d in mk["dates"]})
     rows = []
     for mk in markets:
         dates = mk["dates"]
+        source_sessions = sorted(set(dates) | {d for d in session_dates if d > mk["as_of"]})
         for ep in mk["episodes"]:
             board = ep.get("board", "main")
             ue = u["entries"].get(ep["id"], {})
@@ -554,8 +561,8 @@ def view() -> dict:
             close = [x for x in ep["close"] if x is not None]
             row = {k: v for k, v in ep.items() if k not in ("close", "raw", "start")}
             pri = _priority(ep)
-            age = len(session_dates) - bisect_right(session_dates, ep["first_date"])
-            fresh = 0 <= age < QUEUE_SIGNAL_AGE and ep["first_date"] <= session_dates[-1]
+            age = len(source_sessions) - bisect_right(source_sessions, ep["first_date"])
+            fresh = 0 <= age < QUEUE_SIGNAL_AGE and ep["first_date"] <= source_sessions[-1]
             in_queue = shown in OPEN and pri <= QUEUE_MAX_PRIORITY and fresh and ep.get("queue_current", True)
             comments = _comments(ue)
             row.update(board=board, sme=board == "sme", status=status, shown_status=shown,
