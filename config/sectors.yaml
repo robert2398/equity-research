@@ -1,7 +1,8 @@
 # NSE sectoral index universe.
 # kite_symbol must match the Kite instruments() name under segment INDICES (verified at runtime;
 # sectors whose symbol is not found are reported as missing, never fabricated).
-# csv_slugs are candidate official NSE constituent-list CSVs on archives.nseindia.com,
+# csv_slugs are candidate official NSE constituent-list CSVs (archives.nseindia.com, then
+# niftyindices.com/IndexConstituent),
 # tried in order. If all fail, the constituent list can be imported manually
 # (see README - "Manual constituent import").
 
@@ -34,7 +35,7 @@ sectors:
     csv_slugs: [ind_niftypsubanklist]
   - name: NIFTY PRIVATE BANK
     kite_symbol: NIFTY PVT BANK
-    csv_slugs: [ind_niftyprivatebanklist]
+    csv_slugs: [ind_nifty_privatebanklist, ind_niftyprivatebanklist]
   - name: NIFTY CONSUMER DURABLES
     kite_symbol: NIFTY CONSR DURBL
     csv_slugs: [ind_niftyconsumerdurableslist]
@@ -49,10 +50,10 @@ sectors:
     kite_symbol: NIFTY INFRA
     csv_slugs: [ind_niftyinfralist, ind_niftyinfrastructurelist]
   - name: NIFTY CAPITAL GOODS
-    csv_slugs: [ind_niftycapitalgoodslist, ind_niftycapitalgoodlist]
+    csv_slugs: [ind_niftycapitalgoods_list, ind_niftycapitalgoodslist]
   - name: NIFTY PSE
     csv_slugs: [ind_niftypselist]
   - name: NIFTY POWER
-    csv_slugs: [ind_niftypowerlist]
+    csv_slugs: [ind_niftypower_list, ind_niftypowerlist]
   - name: NIFTY CHEMICALS
-    csv_slugs: [ind_niftychemicalslist]
+    csv_slugs: [ind_niftyChemicals_list, ind_niftychemicals_list]

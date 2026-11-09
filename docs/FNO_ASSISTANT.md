@@ -43,6 +43,19 @@ Useful local commands are:
 
 `scan`, `run --once` and the dashboard's **Scan stored data** button evaluate cached bars once. They do not start the worker or fetch a fresh live feed. Keep `fno run` active for new market data, automatic scans and monitored paper positions. The Refresh button fetches the latest stored scanner and ledger results.
 
+For historical chart review with your own entry and exit decisions, first update the required candles, then export explicit session dates:
+
+```powershell
+& .\.venv\Scripts\python.exe -m scanner fno research-sync --start 2026-11-05 --end 2026-11-09
+& .\.venv\Scripts\python.exe -m scanner fno chart-review `
+  --dates 2026-11-05,2026-11-06,2026-11-09 `
+  --report-dir reports\fno_chart_review_2026-11-09 --progress
+```
+
+This export applies the existing daily/hourly alignment and five-minute setup rules to every stock in the applicable cached F&O universe. It retains overlapping setups and does not suppress candidates based on modeled positions, exits, cooldowns or portfolio limits. `triggered_setups.csv` contains unambiguous observed price crossings; `ambiguous_setups.csv` keeps candles whose crossing or invalidation order cannot be established. `all_filtered_setups.csv` includes every qualifying setup and its observation status, trigger level and chart evidence. Prices are underlying-stock levels, not option premiums. Stops and opposing levels are chart references; no buy or sell is selected for you.
+
+The chart score is shown out of 90, without applying the live combined option score threshold. Historical option liquidity, execution and applicable exchange-reference checks are not certified by this chart-only export. Five-minute candles cannot establish exact intrabar trigger times, so intervals and data gaps are disclosed. Inspect `summary.md` and `report.json` for per-stock coverage and membership provenance; a partial or missing session is never treated as proof that no setups occurred.
+
 | Update | Cadence while the worker is running |
 |---|---|
 | Underlying, index and subscribed option quotes | Streamed as broker updates arrive |

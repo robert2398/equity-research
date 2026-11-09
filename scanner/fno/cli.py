@@ -33,6 +33,11 @@ def add_parser(subparsers):
     history.add_argument("--symbols", help="Optional comma-separated stock symbols")
     history.add_argument("--exclude-symbols", help="Explicit data-quality exclusions, comma separated")
     history.add_argument("--progress", action="store_true")
+    review = commands.add_parser("chart-review", help="Export filtered chart setups and observed triggers for manual decisions")
+    review.add_argument("--dates", required=True, help="Comma-separated regular session dates, YYYY-MM-DD")
+    review.add_argument("--symbols", help="Optional comma-separated F&O stocks; default is the whole universe")
+    review.add_argument("--report-dir", default="reports/fno_chart_review")
+    review.add_argument("--progress", action="store_true")
     replay = commands.add_parser("replay", aliases=["backtest"], help="Underlying signal event study; never option P&L")
     replay.add_argument("--start", required=True, help="YYYY-MM-DD")
     replay.add_argument("--end", required=True, help="YYYY-MM-DD")
@@ -106,6 +111,27 @@ def dispatch(args):
                   "study_start": result["study_start"], "study_end": result["study_end"],
                   "stocks": result["stock_count"], "benchmarks": result["benchmark_count"],
                   "errors": result["errors"]}
+    elif args.fno_cmd == "chart-review":
+        from .chart_review import collect_chart_setups
+        from .chart_review_report import write_chart_review
+        dates = [value.strip() for value in args.dates.split(",") if value.strip()]
+        selected = [value.strip().upper() for value in args.symbols.split(",")] if args.symbols else None
+        last_progress = [0.0]
+
+        def progress(value):
+            clock = time.monotonic()
+            if args.progress and clock - last_progress[0] >= 10:
+                print(json.dumps({"chart_review_progress": value}, default=str), flush=True)
+                last_progress[0] = clock
+
+        result = collect_chart_setups(store, config, dates, selected, progress)
+        result["metadata"] = {"source": "Stored Kite historical underlying candles",
+                              "database": str(store.path), "strategy_version": config["version"],
+                              "configuration": clean_json(config),
+                              "configuration_sha256": hashlib.sha256(json.dumps(clean_json(config), sort_keys=True).encode()).hexdigest(),
+                              "decisions": "Chart review only; user chooses entries and exits"}
+        reports = write_chart_review(result, args.report_dir)
+        result = {"reports": reports, "summary": result["summary"], "warnings": result.get("warnings", [])}
     elif args.fno_cmd in ("replay", "backtest"):
         from .replay import run_replay
         if args.min_trades < 1:
