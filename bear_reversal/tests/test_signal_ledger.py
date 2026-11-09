@@ -1,6 +1,7 @@
 """Signal-ledger logic on synthetic data (no panel, no network)."""
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +11,112 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
 import signal_ledger as sl                      # noqa: E402
+
+
+@pytest.fixture
+def ledger(tmp_path, monkeypatch):
+    for name, filename in (("MARKET", "m.json"), ("SME_MARKET", "sme.json"),
+                           ("IPO_MARKET", "ipo.json"), ("USER", "u.json")):
+        monkeypatch.setattr(sl, name, tmp_path / filename)
+    # Deliberately omit a weekday: age must count sessions, not weekdays or calendar days.
+    dates = ["2026-10-29", "2026-10-30", "2026-11-02", "2026-11-03", "2026-11-05", "2026-11-06"]
+
+    def episode(symbol, first="2026-10-30", **extra):
+        start = dates.index(first)
+        return {"id": f"{symbol}:{first}", "symbol": symbol, "key": symbol,
+                "first_date": first, "first_price": 10, "first_tier_a": False, "first_small": False,
+                "tier_a_now": False, "small_now": False, "grade": "A+", "on_list_today": True,
+                "last_on": dates[-1], "live": True, "start": start,
+                "close": [10] * (len(dates) - start), "raw": [10] * (len(dates) - start), **extra}
+
+    def write(episodes):
+        sl.MARKET.write_text(json.dumps({"as_of": dates[-1], "dates": dates, "episodes": episodes}))
+
+    return episode, write, dates
+
+
+def test_queue_only_fresh_p1_to_p5_and_keeps_other_records(ledger):
+    episode, write, _ = ledger
+    eligible = [episode("P1"), episode("P2", grade="A"), episode("P3", board="ipo", ipo_tier="A"),
+                episode("P4", board="sme"), episode("P5", board="ipo", ipo_tier="B"),
+                episode("TODAY", first="2026-11-06")]
+    others = [episode("OLD", first="2026-10-29"), episode("P6", grade="B"),
+              episode("P7", grade="X"), episode("UNGRADED", grade=None),
+              episode("EXPIRED", live=False), episode("HELD"), episode("PASSED")]
+    write(eligible + others)
+    sl.USER.write_text(json.dumps({"entries": {
+        "HELD:2026-10-30": {"status": "BOUGHT"}, "PASSED:2026-10-30": {"status": "PASSED"}}}))
+    v = sl.view()
+    queue = [r for r in v["rows"] if r["in_queue"]]
+    assert {r["symbol"] for r in queue} == {e["symbol"] for e in eligible}
+    assert v["counts"]["queue"] == len(eligible)
+    assert [r["queue_rank"] for r in queue] == list(range(1, len(eligible) + 1))
+    assert len(v["rows"]) == len(eligible + others) and v["used"] == 1
+    by = {r["symbol"]: r for r in v["rows"]}
+    assert by["P1"]["first_signal_age_sessions"] == 4
+    assert by["TODAY"]["first_signal_age_sessions"] == 0
+    assert by["OLD"]["first_signal_age_sessions"] == 5 and not by["OLD"]["new_this_week"]
+
+
+def test_queue_uses_shared_sessions_for_sparse_and_stale_ipo_data(ledger):
+    episode, write, dates = ledger
+    write([])
+    old = episode("IPO.OLD", first=dates[0], board="ipo", ipo_tier="A")
+    fresh = episode("IPO.FRESH", board="ipo", ipo_tier="B")
+    sl.IPO_MARKET.write_text(json.dumps({"as_of": dates[1], "dates": dates[:2],
+                                        "episodes": [old, fresh]}))
+    by = {r["symbol"]: r for r in sl.view()["rows"]}
+    assert by["IPO.OLD"]["first_signal_age_sessions"] == 5 and not by["IPO.OLD"]["in_queue"]
+    assert by["IPO.FRESH"]["first_signal_age_sessions"] == 4 and by["IPO.FRESH"]["in_queue"]
+
+
+def test_comments_timestamp_history_and_latest_comment_row_order(ledger, monkeypatch):
+    episode, write, _ = ledger
+    write([episode("P1"), episode("P2", grade="A")])
+    legacy = "Original note\nwith a second line"
+    sl.USER.write_text(json.dumps({"entries": {"P2:2026-10-30": {"note": legacy, "updated": "2026-11-01"}}}))
+    before = sl.view()["rows"][1]
+    assert before["comments"] == [{"text": legacy, "created_at": None}]
+    assert before["note_updated_at"] is None
+
+    class Clock:
+        current = datetime(2026, 11, 9, 18, 0, 0, tzinfo=timezone.utc)
+
+        @classmethod
+        def now(cls, tz):
+            assert tz is timezone.utc
+            return cls.current
+
+    monkeypatch.setattr(sl, "datetime", Clock)
+    v = sl.set_entry("P2:2026-10-30", {"comment": "First update"})
+    assert v["rows"][0]["symbol"] == "P2"  # recency precedes priority
+    stamp = v["rows"][0]["note_updated_at"]
+    assert datetime.fromisoformat(stamp) == Clock.current
+    Clock.current = datetime(2026, 11, 9, 18, 0, 1, tzinfo=timezone.utc)
+    v = sl.set_entry("P2:2026-10-30", {"comment": "Second update\nMore detail"})
+    row = v["rows"][0]
+    assert [c["text"] for c in row["comments"]] == ["Second update\nMore detail", "First update", legacy]
+    assert row["comments"][-1]["created_at"] is None
+    assert row["note"] == "Second update\nMore detail" and row["queue_rank"] == 1
+    # Status-only saves and whitespace comments must not invent a new comment time.
+    v = sl.set_entry(row["id"], {"status": "WAIT", "comment": "  \n "})
+    assert v["rows"][0]["comments"] == row["comments"]
+    assert v["rows"][0]["note_updated_at"] == row["note_updated_at"]
+    Clock.current = datetime(2026, 11, 9, 18, 0, 2, tzinfo=timezone.utc)
+    v = sl.set_entry("P1:2026-10-30", {"comment": "Newest comment"})
+    assert [r["symbol"] for r in v["rows"]] == ["P1", "P2"]
+    assert sl._load_user()["entries"]["P2:2026-10-30"]["comments"] == row["comments"]
+
+
+def test_legacy_note_edits_get_timestamped_but_unchanged_notes_do_not(ledger):
+    episode, write, _ = ledger
+    write([episode("ABC")])
+    row = sl.set_entry("ABC:2026-10-30", {"note": "Saved by an older client"})["rows"][0]
+    assert len(row["comments"]) == 1 and row["note_updated_at"]
+    again = sl.set_entry(row["id"], {"note": row["note"], "status": "RESEARCHING"})["rows"][0]
+    assert again["comments"] == row["comments"] and again["note_updated_at"] == row["note_updated_at"]
+    with pytest.raises(ValueError, match="20,000"):
+        sl.set_entry(row["id"], {"comment": "x" * 20001})
 
 
 def test_episodes_split_on_quiet_gap():

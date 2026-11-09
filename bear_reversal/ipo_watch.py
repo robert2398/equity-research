@@ -59,11 +59,11 @@ def _clock_today() -> dict:
 
 def _upcoming() -> list[dict]:
     """Issues open or closed but not yet listed, from NSE's cached list."""
-    from ipo_data import ISSUES
+    from ipo_data import BOARD_OF, ISSUES
     if not ISSUES.exists():
         return []
     d = pd.DataFrame(json.loads(ISSUES.read_text(encoding="utf-8")))
-    d = d[d["securityType"].isin(["EQ", "BE", "SME"]) & (d["listingDate"].astype(str).str.strip() == "-")]
+    d = d[d["securityType"].isin(list(BOARD_OF)) & (d["listingDate"].astype(str).str.strip() == "-")]
     d["end"] = pd.to_datetime(d["ipoEndDate"], format="%d-%b-%Y", errors="coerce")
     d = d[d["end"] >= pd.Timestamp.today().normalize() - pd.Timedelta(days=10)]
     d = d.drop_duplicates(["symbol", "ipoStartDate"]).sort_values("end")

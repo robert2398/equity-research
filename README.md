@@ -24,10 +24,14 @@ copy .env.example .env            # then fill KITE_API_KEY and KITE_API_SECRET
 #    (create a Kite Connect app at https://developers.kite.trade;
 #     set the app's Redirect URL to http://127.0.0.1:8765/kite/callback)
 
-# 3. Manual one-time-per-day login (browser; the app never sees your password/TOTP)
-python -m scanner auth login
+# 3. Daily refresh — ONE command (any python; it switches to .venv itself):
+python daily.py                   # auth login (only if session expired) -> data sync -> scan
+                                  #   -> bear_reversal/run_daily.py (dashboard data)
+python daily.py --login           # force a fresh Kite login first
+python daily.py --from scan       # resume from a failed step (login|sync|scan|dashboard)
 
-# 4. Daily operation
+# 4. The same steps individually
+python -m scanner auth login      # manual browser login (the app never sees your password/TOTP)
 python -m scanner data sync       # incremental download of completed candles
 python -m scanner scan            # full scan -> snapshot + DuckDB + processed tables
 python -m scanner report          # 9 markdown reports under reports/

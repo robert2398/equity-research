@@ -89,9 +89,12 @@ def test_issue_list_parsing(tmp_path, monkeypatch):
          "listingDate": "11-MAY-2018", "ipoEndDate": "05-MAY-2018"},
         {"company": "D", "symbol": "DDD", "securityType": "DEBT", "issuePrice": "1000",
          "listingDate": "01-JAN-2022", "ipoEndDate": "20-DEC-2021"},
+        {"company": "E", "symbol": "EEE", "securityType": "Equity", "issuePrice": "Rs.500",
+         "listingDate": "09-NOV-2026", "ipoEndDate": "04-NOV-2026"},   # NSE's newer label
     ]))
     d = issues().set_index("symbol")
-    assert list(d.index) == ["CCC", "AAA", "BBB"]
+    assert list(d.index) == ["CCC", "AAA", "BBB", "EEE"]
+    assert d.loc["EEE", "board"] == "MAIN" and d.loc["EEE", "issue_price"] == 500
     assert d.loc["AAA", "issue_price"] == 315 and d.loc["AAA", "board"] == "MAIN"
     assert d.loc["BBB", "issue_price"] == 40 and pd.isna(d.loc["BBB", "listing_date"])
     assert d.loc["CCC", "issue_price"] == 33

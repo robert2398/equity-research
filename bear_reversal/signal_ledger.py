@@ -5,8 +5,9 @@ Why: the daily signal list flickers (median streak 3 sessions, 68% of names come
 not the day. An episode starts on the first signal after 60 quiet sessions and stays LIVE
 for 60 sessions after its last signal.
 
-Queue order, by evidence on the common yardstick (buy at the signal close, 50% trailing stop or
-2 years): P1 grade A+, P2 grade A, P3 IPO rule A, P4 SME BUY, P5 IPO rule B, P6 grade B, P7 grade X.
+Queue: undecided P1-P5 episodes with a first signal aged 0-4 trading sessions. Most recently
+commented first, then priority: P1 grade A+, P2 grade A, P3 IPO A, P4 SME BUY, P5 IPO B.
+Other views retain older episodes, P6 grade B and P7 grade X. Comments keep a timestamped history.
 
 Main-board episodes queue by their Next Bull grade (nextbull_lab.grade, computed on the first
 signal, or today while on today's list).
@@ -40,7 +41,8 @@ import os
 import re
 import sys
 import threading
-from datetime import date
+from bisect import bisect_right
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -63,6 +65,8 @@ TRAIL = 0.50        # exit: close 50% below the highest close since entry (bagge
 DEFAULT_SLOTS = 20
 STATUSES = ("NEW", "RESEARCHING", "WAIT", "BOUGHT", "PASSED", "EXITED")
 OPEN = ("NEW", "RESEARCHING", "WAIT")
+QUEUE_MAX_PRIORITY = 5
+QUEUE_SIGNAL_AGE = 5   # first signal today is age 0; ages 0-4 qualify
 # Main-board episodes queue by their Next Bull grade (nextbull_lab.grade). Evidence: every signal
 # 2016-24 traded at the signal close, 50% trailing stop or 2 years (reports/NEXT_BULL_LAB.md):
 # median trade and share that doubled within 2y. The old small cap / tier A groups did not hold
@@ -271,8 +275,11 @@ def _clean_patch(patch: dict) -> dict:
             if v not in STATUSES:
                 raise ValueError(f"status must be one of {', '.join(STATUSES)}")
             out[k] = v
-        elif k == "note":
-            out[k] = str(v)[:2000]
+        elif k in ("note", "comment"):
+            text = str(v)
+            if len(text) > 20000:
+                raise ValueError(f"{k} must be at most 20,000 characters")
+            out[k] = text
         elif k in ("buy_price", "exit_price"):
             if v in (None, ""):
                 out[k] = None
@@ -294,6 +301,14 @@ def _clean_patch(patch: dict) -> dict:
     return out
 
 
+def _comments(entry: dict) -> list[dict]:
+    """Keep legacy notes without inventing a time that was never recorded."""
+    comments = list(entry.get("comments") or [])
+    if not comments and entry.get("note", "").strip():
+        comments.append({"text": entry["note"], "created_at": entry.get("note_updated_at")})
+    return sorted(comments, key=lambda c: c.get("created_at") or "", reverse=True)
+
+
 def set_entry(ep_id: str, patch: dict) -> dict:
     """Update your decision on one episode. Buying or exiting without a price fills in the
     latest close and date, which you can then edit."""
@@ -309,6 +324,15 @@ def set_entry(ep_id: str, patch: dict) -> dict:
     with _lock:
         u = _load_user()
         e = u["entries"].setdefault(ep_id, {})
+        comments = _comments(e)
+        # New clients append comments; retain support for clients editing the old note field.
+        comment = patch.pop("comment", None)
+        if comment is None and "note" in patch and patch["note"] != e.get("note", ""):
+            comment = patch["note"]
+        if comment is not None and comment.strip():
+            stamp = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+            comments.insert(0, {"text": comment, "created_at": stamp})
+            e.update(comments=comments, note=comment, note_updated_at=stamp)
         e.update(symbol=ep["symbol"], key=ep["key"], first_date=ep["first_date"],
                  board=ep.get("board", "main"))
         e.update(patch)
@@ -392,6 +416,8 @@ def view() -> dict:
     markets = _load_markets()
     m = markets[0]
     u = _load_user()
+    # The shared market calendar counts actual sessions, including holidays and thin IPOs.
+    session_dates = sorted({d for mk in markets for d in mk["dates"]})
     rows = []
     for mk in markets:
         dates = mk["dates"]
@@ -405,14 +431,20 @@ def view() -> dict:
             close = [x for x in ep["close"] if x is not None]
             row = {k: v for k, v in ep.items() if k not in ("close", "raw", "start")}
             pri = _priority(ep)
+            age = len(session_dates) - bisect_right(session_dates, ep["first_date"])
+            fresh = 0 <= age < QUEUE_SIGNAL_AGE and ep["first_date"] <= session_dates[-1]
+            in_queue = shown in OPEN and pri <= QUEUE_MAX_PRIORITY and fresh
+            comments = _comments(ue)
             row.update(board=board, sme=board == "sme", status=status, shown_status=shown,
                        note=ue.get("note", ""),
+                       comments=comments, note_updated_at=ue.get("note_updated_at"),
+                       first_signal_age_sessions=age, in_queue=in_queue,
                        buy_date=ue.get("buy_date"), buy_price=ue.get("buy_price"),
                        exit_date=ue.get("exit_date"), exit_price=ue.get("exit_price"),
                        tier_a=bool(a), small=bool(sm), priority=pri,
                        last_price=next((x for x in reversed(ep["raw"]) if x is not None), None),
                        ret_since_signal=_r(close[-1] / close[0] - 1, 4) if close else None,
-                       new_this_week=ep["first_date"] >= dates[max(0, len(dates) - 5)])
+                       new_this_week=fresh)
             if status in ("BOUGHT", "EXITED"):
                 row["position"] = _position(ep, dates, ue)
             rows.append(row)
@@ -420,13 +452,16 @@ def view() -> dict:
     # IPO episodes rank inside their group by ipo_rank (small, calm listings first; ipo_lab.py)
     rows.sort(key=lambda r: (r["priority"], not r["on_list_today"], -(r.get("ipo_rank") or 0),
                              r["first_date"]))
+    # Stable sort: newest comment first; uncommented rows retain their priority order.
+    rows.sort(key=lambda r: r["note_updated_at"] or "", reverse=True)
     holdings = [r for r in rows if r["status"] == "BOUGHT"]
-    queue = [r for r in rows if r["shown_status"] in OPEN]
+    queue = [r for r in rows if r["in_queue"]]
     for n, r in enumerate(queue, 1):
         r["queue_rank"] = n
     slots = int(u.get("slots", DEFAULT_SLOTS))
     rules = dict(m.get("rules") or {"quiet": QUIET, "live": LIVE, "trail": TRAIL})
     rules.update(sme=SME_RULE, ipo=IPO_RULE,
+                 queue_max_priority=QUEUE_MAX_PRIORITY, queue_signal_age=QUEUE_SIGNAL_AGE,
                  priority={str(k): {"group": g, "evidence": h} for k, (g, h) in PRIORITY.items()})
     as_of = {x["board"]: x["as_of"] for x in markets}
     return {"as_of": m["as_of"], "sme_as_of": as_of.get("sme"), "ipo_as_of": as_of.get("ipo"),
@@ -453,7 +488,7 @@ if __name__ == "__main__":
     print(f"as of {v['as_of']}: {c['episodes']} episodes in the last year · {c['on_list_today']} "
           f"on today's list · queue {c['queue']} · new this week {c['new_this_week']} · "
           f"slots {v['used']}/{v['slots']}")
-    for r in [r for r in v["rows"] if r["shown_status"] in OPEN][:15]:
+    for r in [r for r in v["rows"] if r["in_queue"]][:15]:
         print(f"  P{r['priority']} {r['symbol'] + (' [SME]' if r['sme'] else ''):18s} first {r['first_date']} Rs{r['first_price']}"
               f"  on {r['sessions_on']}d/{r['streaks']}x  {'TODAY' if r['on_list_today'] else 'off ' + str(r['sessions_since_last']) + 'd':>8s}"
               f"  since signal {100 * (r['ret_since_signal'] or 0):+.0f}%")

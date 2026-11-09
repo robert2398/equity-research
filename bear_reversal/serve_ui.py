@@ -19,7 +19,7 @@ Serves:
                              checklist + Markdown (research_dossier.py; no LLM)
   /api/ipo-watch          -> IPO scanner: first-year IPOs, bases, buy signals (ipo_watch.py)
   /api/ledger             -> signal ledger: episodes + your decisions (signal_ledger.py)
-  POST /api/ledger/<ID>   -> save your decision on one episode (JSON body: status, note,
+  POST /api/ledger/<ID>   -> save your decision on one episode (JSON body: status, comment,
                              buy_date, buy_price, exit_date, exit_price)
   POST /api/ledger-settings -> {"slots": N}
 

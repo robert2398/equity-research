@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { saveLedgerEntry, fmtPct, fmtNum } from '../api.js';
 
 // shared by Signal Ledger and Next Bull Watch: tags + the decide pop-up for one episode
@@ -60,10 +60,20 @@ export function OnList({ r }) {
   return <span className="mut" title={`last on the list ${r.last_on}`}>off {r.sessions_since_last}d</span>;
 }
 
-/** Decide on one episode: status, note, buy / exit. Saves to state/signal_ledger.json. */
+export function CommentTime({ value }) {
+  return value ? <time dateTime={value}>{new Date(value).toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+    second: '2-digit', timeZoneName: 'short',
+  })}</time> : <span className="mut">Time unavailable</span>;
+}
+
+/** Decide on one episode and append timestamped comments. */
 export function DecideModal({ row, asOf, onClose, onSaved }) {
   const [status, setStatus] = useState(row.status);
-  const [note, setNote] = useState(row.note || '');
+  const [note, setNote] = useState('');
+  const [fullscreen, setFullscreen] = useState(false);
+  const [expandedComment, setExpandedComment] = useState(null);
+  const noteRef = useRef(null);
   const [buyDate, setBuyDate] = useState(row.buy_date || asOf);
   const [buyPrice, setBuyPrice] = useState(row.buy_price ?? row.last_price ?? '');
   const [exitDate, setExitDate] = useState(row.exit_date || asOf);
@@ -71,9 +81,29 @@ export function DecideModal({ row, asOf, onClose, onSaved }) {
   const [err, setErr] = useState(null);
   const [busy, setBusy] = useState(false);
   const pos = row.position || {};
+  const comments = [...(row.comments || (row.note ? [{ text: row.note, created_at: null }] : []))]
+    .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+
+  useEffect(() => {
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = previous; };
+  }, []);
+
+  useEffect(() => {
+    if (!fullscreen) return;
+    const escape = (event) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation(); setFullscreen(false); setExpandedComment(null);
+      }
+    };
+    document.addEventListener('keydown', escape);
+    return () => document.removeEventListener('keydown', escape);
+  }, [fullscreen]);
 
   const save = async () => {
-    const patch = { status, note };
+    const patch = { status };
+    if (note.trim()) patch.comment = note;
     if (status === 'BOUGHT' || status === 'EXITED') Object.assign(patch, { buy_date: buyDate, buy_price: buyPrice });
     if (status === 'EXITED') Object.assign(patch, { exit_date: exitDate, exit_price: exitPrice });
     setBusy(true);
@@ -84,11 +114,12 @@ export function DecideModal({ row, asOf, onClose, onSaved }) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <div className={`modal-backdrop ${fullscreen ? 'ledger-fullscreen' : ''}`} onClick={onClose}>
+      <div className={`modal ledger-decide ${fullscreen ? 'is-fullscreen' : ''} ${expandedComment ? 'is-reading-comment' : ''}`} role="dialog"
+        aria-modal="true" aria-labelledby="ledger-decide-title" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <div>
-            <div className="title">{row.symbol} <Tags r={row} /></div>
+            <div className="title" id="ledger-decide-title">{row.symbol} <Tags r={row} /></div>
             <div className="subtitle">
               first signal {row.first_date} at ₹{fmtNum(row.first_price, 2)} · on the list {row.sessions_on} sessions
               ({row.streaks}x) · priority P{row.priority}
@@ -97,6 +128,7 @@ export function DecideModal({ row, asOf, onClose, onSaved }) {
           <button type="button" className="btn ghost" onClick={onClose} aria-label="close">✕</button>
         </div>
         <div className="modal-body">
+          <div className="ledger-decision-fields">
           <div className="facts">
             <div className="fact"><div className="k">Last close</div><div className="v">₹{fmtNum(row.last_price, 2)}</div></div>
             <div className="fact"><div className="k">Since signal</div>
@@ -142,19 +174,47 @@ export function DecideModal({ row, asOf, onClose, onSaved }) {
             </div>
           )}
 
-          <div className="note-sec">
-            <h3>Note (why bought / passed — this becomes your test data)</h3>
-            <textarea className="note-input" rows={3} value={note} onChange={(e) => setNote(e.target.value)}
-              placeholder="e.g. passed: OCF negative 3 years · pledge 40% · or: bought, Q2 sales +35%, debt falling" />
           </div>
+          {expandedComment && <section className="ledger-comment-reader" aria-label="Full screen comment">
+            <div className="ledger-comment-toolbar">
+              <CommentTime value={expandedComment.created_at} />
+              <button type="button" className="btn" onClick={() => { setExpandedComment(null); setFullscreen(false); }}>
+                Exit full screen</button>
+            </div>
+            <div className="ledger-comment-text">{expandedComment.text}</div>
+          </section>}
+          <div className="note-sec ledger-comment-editor">
+            <div className="ledger-comment-toolbar">
+              <h3><label htmlFor="ledger-comment">Add comment</label></h3>
+              <button type="button" className="btn xs" aria-pressed={fullscreen}
+                onClick={() => { setFullscreen(!fullscreen); noteRef.current?.focus(); }}>
+                {fullscreen ? 'Exit full screen' : 'Full screen'}</button>
+            </div>
+            <textarea id="ledger-comment" ref={noteRef} className="note-input" rows={12} maxLength={20000}
+              value={note} onChange={(e) => setNote(e.target.value)}
+              placeholder="e.g. passed: OCF negative 3 years · pledge 40% · or: bought, Q2 sales +35%, debt falling" />
+            <div className="small">Timestamp added when saved · {note.length.toLocaleString()} / 20,000 characters</div>
+          </div>
+          {comments.length > 0 && <section className="note-sec ledger-comment-history" aria-label="Comment history">
+            <h3>Comments · newest first</h3>
+            {comments.map((comment, index) => <article className="ledger-comment" key={`${comment.created_at || 'legacy'}-${index}`}>
+              <div className="ledger-comment-toolbar">
+                <div className="small"><CommentTime value={comment.created_at} /></div>
+                <button type="button" className="btn xs" aria-label="Read comment in full screen"
+                  onClick={() => { setExpandedComment(comment); setFullscreen(true); }}>Full screen</button>
+              </div>
+              <div className="ledger-comment-text">{comment.text}</div>
+            </article>)}
+          </section>}
           {err && <div className="neg small" style={{ marginTop: 8 }}>{err}</div>}
         </div>
         <div className="modal-foot">
           <span className="small">saved locally in bear_reversal/state/signal_ledger.json</span>
-          <div style={{ display: 'flex', gap: 8 }}>
+          {expandedComment ? <button type="button" className="btn" onClick={() => { setExpandedComment(null); setFullscreen(false); }}>
+            Back to decision</button> : <div style={{ display: 'flex', gap: 8 }}>
             <button type="button" className="btn" onClick={onClose}>Cancel</button>
             <button type="button" className="btn primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</button>
-          </div>
+          </div>}
         </div>
       </div>
     </div>

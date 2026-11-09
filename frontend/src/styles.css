@@ -139,6 +139,29 @@ table.plain tr:hover td { background: none; cursor: default; }
 .slot-input { width: 56px; padding: 1px 6px; font-size: 11.5px; }
 .note-input { width: 100%; box-sizing: border-box; resize: vertical; font-size: 13px; }
 .note-cell { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ledger-decide .note-input { min-height: 280px; padding: 12px; line-height: 1.6; }
+.ledger-comment-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  margin-bottom: 8px; }
+.ledger-comment-toolbar h3 { margin: 0; }
+.ledger-comment { background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px; margin-bottom: 10px; }
+.ledger-comment-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px;
+  line-height: 1.6; margin-top: 6px; }
+.modal-backdrop.ledger-fullscreen { padding: 0; overflow: hidden; }
+.ledger-decide.is-fullscreen { width: 100%; max-width: none; height: 100dvh;
+  border: none; border-radius: 0; display: flex; flex-direction: column; }
+.ledger-decide.is-fullscreen .modal-head, .ledger-decide.is-fullscreen .modal-foot { flex-shrink: 0; }
+.ledger-decide.is-fullscreen .modal-body { display: flex; flex-direction: column; flex: 1;
+  min-height: 0; overflow-y: auto; }
+.ledger-decide.is-fullscreen .ledger-decision-fields { display: none; }
+.ledger-decide.is-fullscreen .ledger-comment-editor { display: flex; flex-direction: column;
+  flex: 1; min-height: 180px; }
+.ledger-decide.is-fullscreen .note-input { flex: 1; min-height: 100px; resize: none; }
+.ledger-decide.is-fullscreen .ledger-comment-history { flex-shrink: 0; max-height: 32vh; overflow-y: auto; }
+.ledger-decide.is-reading-comment .ledger-comment-editor,
+.ledger-decide.is-reading-comment .ledger-comment-history { display: none; }
+.ledger-comment-reader { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 0; }
+.ledger-comment-reader .ledger-comment-text { font-size: 16px; line-height: 1.75; }
 
 /* sector drill-down */
 tr.selected td { background: #1a2232; }

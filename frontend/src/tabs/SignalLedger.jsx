@@ -1,11 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { fetchLedger, saveLedgerSettings, fmtNum } from '../api.js';
 import { DossierModal } from './NextBullWatch.jsx';
-import { DecideModal, LedgerGrade, OnList, STATUS_PILL, Tags, signed } from '../components/LedgerDecide.jsx';
+import { CommentTime, DecideModal, LedgerGrade, OnList, STATUS_PILL, Tags, signed } from '../components/LedgerDecide.jsx';
 
-const OPEN = ['NEW', 'RESEARCHING', 'WAIT'];
 const VIEWS = [
-  ['queue', 'Queue', (r) => OPEN.includes(r.shown_status)],
+  ['queue', 'Queue', (r) => r.in_queue],
   ['holdings', 'Holdings', (r) => r.status === 'BOUGHT'],
   ['passed', 'Passed', (r) => r.status === 'PASSED'],
   ['exited', 'Exited', (r) => r.status === 'EXITED'],
@@ -16,23 +15,24 @@ const VIEWS = [
 ];
 
 function HowTo({ rules }) {
-  // one list in queue order: grades A+ / A, IPO rules, grades B / X, SME
+  // Only the priority groups eligible for the queue.
   const groups = [
     ...Object.entries(rules?.priority || {}).map(([k, v]) => ({ p: Number(k), label: v.group, ev: v.evidence })),
     ...Object.entries(rules?.ipo || {}).map(([t, v]) => ({ p: v.priority, tag: <span className="pill green">IPO {t}</span>, label: v.group, ev: v.hit2x })),
     ...(rules?.sme ? [{ p: rules.sme.priority, tag: <span className="pill amber">SME</span>, label: rules.sme.group, ev: rules.sme.hit2x, tip: rules.sme.note }] : []),
-  ].sort((a, b) => a.p - b.p);
+  ].filter((g) => g.p <= rules.queue_max_priority).sort((a, b) => a.p - b.p);
   return (
     <div className="steps">
-      <div className="step"><span className="n">1</span><span className="t">Review once a week</span>
-        <div className="d">A stock enters the ledger on its first signal after {rules?.quiet} quiet sessions and
-          stays live {rules?.live} sessions after its last one. Dropping off the daily list means nothing; buying on
-          day 1 tested no better than 10–20 sessions later.</div></div>
+      <div className="step"><span className="n">1</span><span className="t">Review fresh signals</span>
+        <div className="d">The queue contains undecided P1–P{rules.queue_max_priority} signals fewer than{' '}
+          {rules.queue_signal_age} trading sessions old (age 0–{rules.queue_signal_age - 1}).
+          Age is measured from the first signal to the latest data session.</div></div>
       <div className="step"><span className="n">2</span><span className="t">Fill free slots in priority order</span>
         <div className="d">{groups.map((g) => (
           <div key={g.p} style={{ marginTop: 3 }} title={g.tip}>P{g.p} {g.tag} {g.label} — {g.ev}</div>))}
           <div style={{ marginTop: 3 }}>(every signal 2016–24, bought at the signal close, 50% trailing stop or 2 years) ·
-            main-board names are graded on their first signal, or today while on today&apos;s list · ties: oldest first</div></div></div>
+            main-board names are graded on their first signal, or today while on today&apos;s list ·
+            latest comment first, then priority for rows without a timestamp</div></div></div>
       <div className="step"><span className="n">3</span><span className="t">Decide and write why</span>
         <div className="d">Open the Dossier, apply the vetoes, mark Bought / Passed / Wait with a note. Pass notes
           are the data that will later show whether the fundamental filters help.</div></div>
@@ -88,7 +88,7 @@ export default function SignalLedger({ onOpen }) {
             {slotErr && <span className="neg"> {slotErr}</span>}</div></div>
         <div className="card"><div className="label">Queue</div>
           <div className="value">{c.queue}</div>
-          <div className="note">live, undecided · {c.on_list_today} on today&apos;s list</div></div>
+          <div className="note">P1–P{data.rules.queue_max_priority} · first signal age &lt; {data.rules.queue_signal_age} trading sessions</div></div>
         <div className="card"><div className="label">New this week</div>
           <div className="value pos">{c.new_this_week}</div>
           <div className="note">first signal in the last 5 sessions</div></div>
@@ -114,6 +114,7 @@ export default function SignalLedger({ onOpen }) {
         ))}
       </div>
 
+      <div className="small" style={{ marginTop: 8 }}>Latest comments appear first · rows without comment timestamps follow in priority order.</div>
       <div className="panel" style={{ overflowX: 'auto', marginTop: 8 }}>
         {rows.length === 0 ? <div className="empty-ai">nothing here yet</div> : (
           <table>
@@ -122,7 +123,7 @@ export default function SignalLedger({ onOpen }) {
               <th title="sessions on the list · separate streaks">On list</th><th>Today</th>
               <th>Since signal</th><th>Mcap ₹cr</th><th>Status</th>
               {showPos && <><th>Buy ₹</th><th>Return</th><th title="exit if a close falls to this">Stop ₹</th></>}
-              <th>Note</th><th />
+              <th>Comment</th><th title="latest saved comment; newest first">Comment saved ↓</th><th />
             </tr></thead>
             <tbody>
               {rows.map((r, i) => {
@@ -132,7 +133,7 @@ export default function SignalLedger({ onOpen }) {
                     <td className="mut">{r.queue_rank && view === 'queue' ? r.queue_rank : i + 1}</td>
                     <td style={{ whiteSpace: 'nowrap' }}><b>P{r.priority}</b> <LedgerGrade r={r} /></td>
                     <td>{r.symbol} <Tags r={r} /></td>
-                    <td>{r.first_date} · ₹{fmtNum(r.first_price, 1)}</td>
+                    <td title={`${r.first_signal_age_sessions} trading sessions since the first signal`}>{r.first_date} · ₹{fmtNum(r.first_price, 1)}</td>
                     <td>{r.sessions_on}d · {r.streaks}x</td>
                     <td><OnList r={r} /></td>
                     <td className={r.ret_since_signal >= 0 ? 'pos' : 'neg'}>{signed(r.ret_since_signal)}</td>
@@ -145,6 +146,7 @@ export default function SignalLedger({ onOpen }) {
                         {p.stop_hit && <span className="pill red" style={{ marginLeft: 4 }}>exit</span>}</td>
                     </>}
                     <td className="small note-cell" title={r.note}>{r.note}</td>
+                    <td className="small">{r.note || r.comments?.length ? <CommentTime value={r.note_updated_at} /> : '–'}</td>
                     <td onClick={(e) => e.stopPropagation()}>
                       <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                         <button type="button" className="btn xs primary" onClick={() => setEdit(r)}>Decide</button>

@@ -5,8 +5,8 @@ session.json
 *.token
 
 # data & generated artifacts
-data/
-reports/
+/data/
+/reports/
 *.duckdb
 *.duckdb.wal
 

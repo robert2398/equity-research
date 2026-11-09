@@ -46,7 +46,8 @@ SME_MCAP = STATE / "sme_mcap"
 API = "https://www.nseindia.com/api/public-past-issues"
 FIRST_YEAR = 2016
 MATCH_DAYS = 7
-BOARD_OF = {"EQ": "MAIN", "BE": "MAIN", "SME": "SME"}
+# NSE renamed main-board securityType "EQ" -> "Equity" (Nov 2026); accept both
+BOARD_OF = {"EQ": "MAIN", "BE": "MAIN", "Equity": "MAIN", "SME": "SME"}
 
 
 # --------------------------------------------------------------------------- downloads
@@ -185,6 +186,9 @@ def _main_keys(syms: set[str]) -> pd.DataFrame:
         x = x[x["symbol"].isin(syms)]
         if len(x):
             parts.append(x)
+    if not parts:
+        return pd.DataFrame({"date": pd.Series(dtype="datetime64[ns]"),
+                             "symbol": pd.Series(dtype=object), "key": pd.Series(dtype=object)})
     x = pd.concat(parts, ignore_index=True)
     x["date"] = pd.to_datetime(x["date"])
     x["key"] = x["isin"].astype(str).str[:9]

@@ -10,8 +10,11 @@ formation tracking). It is deliberately isolated from the main scanner research:
 ## Daily operation (run after your usual sync)
 
 ```bash
+python daily.py                     # from repo root: does all four steps below
+# or individually:
 python -m scanner auth login        # once per day (~06:00 IST expiry)
 python -m scanner data sync         # incremental candles into the shared store
+python -m scanner scan              # main scanner snapshot (Sectors / Top Movers tabs)
 python bear_reversal/run_daily.py   # scan -> dated report + charts + UI bundle
 python bear_reversal/serve_ui.py    # interactive dashboard -> http://localhost:8123
 ```
@@ -75,6 +78,8 @@ delisted before 2024 have no cap, so these comparisons are made on the known-cap
 
 - **Daily run** (via `next_bull_watch.run`): refreshes `ui_data/signal_ledger_market.json` with every episode of the last year, its A/S tags, and closes since the first signal.
 - **Your decisions** live only in `state/signal_ledger.json`, written by the UI and never touched by the daily run. For each episode: status (new/researching/wait/bought/passed/exited), note, buy and exit price/date, plus your slot count.
+- **Queue:** only live, undecided P1–P5 episodes with a first signal aged 0–4 trading sessions, counted on the shared market calendar. P6/P7 and older episodes remain available in the other views.
+- **Comments:** saving a new comment records a UTC timestamp and preserves earlier comments. Comments and ledger rows show the most recent comment first; rows without a timestamp follow in priority order. Existing notes remain visible with an unavailable timestamp. The comment editor has a full-screen toggle (Escape restores its normal size), and displays timestamps in the browser's local timezone.
 - **The tab shows:**
   - the queue in priority order, by evidence on the common yardstick (`setup_compare.py`, `nextbull_lab.py`): P1 Next Bull grade A+, P2 grade A, P3 IPO A, P4 SME BUY, P5 IPO B, P6 grade B (clock not ready), P7 grade X (hard veto). A main-board episode is graded on its first signal, or on today's session while it is on today's list, with the fundamentals known that day; `?` on the grade = no fundamentals on file, so the fundamental vetoes were not checked. The small-cap / RS ≥ 95 tags are shown but no longer set the priority (as groups they did worse trade by trade);
   - free slots;
