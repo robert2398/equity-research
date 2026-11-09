@@ -13,6 +13,11 @@ sys.path.insert(0, str(HERE.parent))
 import signal_ledger as sl                      # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def isolate_bear_market(tmp_path, monkeypatch):
+    monkeypatch.setattr(sl, "BEAR_MARKET", tmp_path / "bear.json")
+
+
 @pytest.fixture
 def ledger(tmp_path, monkeypatch):
     for name, filename in (("MARKET", "m.json"), ("SME_MARKET", "sme.json"),
@@ -68,6 +73,35 @@ def test_queue_uses_shared_sessions_for_sparse_and_stale_ipo_data(ledger):
     by = {r["symbol"]: r for r in sl.view()["rows"]}
     assert by["IPO.OLD"]["first_signal_age_sessions"] == 5 and not by["IPO.OLD"]["in_queue"]
     assert by["IPO.FRESH"]["first_signal_age_sessions"] == 4 and by["IPO.FRESH"]["in_queue"]
+
+
+def test_bear_actionable_breakouts_join_queue_using_trigger_date(ledger):
+    import pandas as pd
+    episode, write, dates = ledger
+    write([episode("MAIN"), episode("VETO", grade="X")])
+    candidates = {"as_of": dates[-1], "actionable": [
+        {"symbol": "BRFRESH", "trigger_date": dates[1], "entry_close": 20, "core_score": 65, "setups": ["R"]},
+        {"symbol": "BROLD", "trigger_date": dates[0], "entry_close": 20, "core_score": 70, "setups": ["H", "R"]}],
+        "watch": [{"symbol": "WATCH", "trigger_date": dates[-1], "entry_close": 20}]}
+    candles = {sym: pd.DataFrame({"date": pd.to_datetime(dates), "close": [20, 20, 22, 24, 26, 28]})
+               for sym in ("BRFRESH", "BROLD", "WATCH")}
+    sl.write_bear_market(candidates, candles, pd.to_datetime(dates))
+    v = sl.view()
+    by = {r["symbol"]: r for r in v["rows"]}
+    assert set(by) == {"MAIN", "VETO", "BRFRESH", "BROLD"}
+    assert {r["symbol"] for r in v["rows"] if r["in_queue"]} == {"MAIN", "BRFRESH"}
+    assert by["BRFRESH"]["priority_label"] == "BR" and by["BRFRESH"]["first_signal_age_sessions"] == 4
+    assert by["BROLD"]["first_signal_age_sessions"] == 5 and not by["BROLD"]["in_queue"]
+    assert v["counts"]["queue_by_source"] == {"main": 1, "sme": 0, "ipo": 0, "bear": 1}
+    # Rebuilding the same snapshot cannot add duplicate rows or on-list sessions.
+    sl.write_bear_market(candidates, candles, pd.to_datetime(dates))
+    assert next(r for r in sl.view()["rows"] if r["symbol"] == "BRFRESH")["sessions_on"] == 1
+    bought = sl.set_entry(by["BRFRESH"]["id"], {"status": "BOUGHT", "comment": "Keep this decision"})
+    assert bought["used"] == 1
+    sl.write_bear_market({"as_of": dates[-1], "actionable": [], "watch": []}, candles, pd.to_datetime(dates))
+    row = next(r for r in sl.view()["rows"] if r["symbol"] == "BRFRESH")
+    assert row["status"] == "BOUGHT" and row["note"] == "Keep this decision"
+    assert row["position"]["last_close"] == 28 and not row["on_list_today"]
 
 
 def test_comments_timestamp_history_and_latest_comment_row_order(ledger, monkeypatch):

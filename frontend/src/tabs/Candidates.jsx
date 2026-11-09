@@ -117,6 +117,9 @@ function SmeMomentum({ sm, legacy, list, onOpen }) {
 export default function Candidates({ bundle, onOpen }) {
   const [setupFilter, setSetupFilter] = useState('ALL');
   const [freshFilter, setFreshFilter] = useState('ALL');
+  const [ledger, setLedger] = useState(null);
+  const [decide, setDecide] = useState(null);
+  useEffect(() => { fetchLedger().then((v) => setLedger(v && !v.error ? v : null)); }, []);
   const setups = bundle.scanner_setups || [];
   const matrix = useMemo(() => {
     const m = new Map((bundle.opportunity_matrix || []).map((r) => [r.symbol, r]));
@@ -139,6 +142,7 @@ export default function Candidates({ bundle, onOpen }) {
         {kind === 'actionable' ? <th title="breakout session · sessions ago · move since">Triggered</th>
           : kind === 'watch' ? <th title="what a breakout must show to become actionable">Needs</th> : null}
         <th>Status</th>
+        {kind === 'actionable' && <th>Ledger</th>}
       </tr></thead>
       <tbody>
         {(rows || []).map((c) => (
@@ -166,9 +170,13 @@ export default function Candidates({ bundle, onOpen }) {
                 : <span className="pill grey">watch</span>}
               {c.breadth_note && <span className="pill amber" title={c.breadth_note} style={{ marginLeft: 4 }}>gate closed</span>}
             </td>
+            {kind === 'actionable' && <td onClick={(e) => e.stopPropagation()}>
+              <LedgerButton entry={ledgerEpisode(ledger, c.symbol, 'bear')}
+                onClick={() => setDecide(ledgerEpisode(ledger, c.symbol, 'bear'))} />
+            </td>}
           </tr>
         ))}
-        {(rows || []).length === 0 && <tr><td colSpan={12} className="mut">none — zero is a valid result</td></tr>}
+        {(rows || []).length === 0 && <tr><td colSpan={kind === 'actionable' ? 13 : 12} className="mut">none — zero is a valid result</td></tr>}
       </tbody>
     </table>
   );
@@ -243,6 +251,8 @@ export default function Candidates({ bundle, onOpen }) {
           </tbody>
         </table>
       </div>
+      {decide && ledger && <DecideModal row={decide} asOf={ledger.bear_as_of || ledger.as_of}
+        onClose={() => setDecide(null)} onSaved={(v) => { setLedger(v); setDecide(null); }} />}
     </div>
   );
 }

@@ -124,6 +124,8 @@ def export(candidates: dict | None = None) -> Path:
         candidates = json.loads(CAND_FILE.read_text(encoding="utf-8"))
     if candidates is not None:
         CAND_FILE.write_text(json.dumps(candidates, indent=2, default=str), encoding="utf-8")
+        from signal_ledger import write_bear_market
+        write_bear_market(candidates, stocks, n500.index)
 
     # ---- latest main-scanner snapshot
     from scanner.data.store import latest_snapshot

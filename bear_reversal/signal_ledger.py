@@ -1,11 +1,11 @@
-"""Signal ledger: one row per BAGGER SIGNAL *episode*, plus your decisions on it.
+"""Signal ledger: Next Bull episodes, SME/IPO breakouts and actionable bear reversals.
 
 Why: the daily signal list flickers (median streak 3 sessions, 68% of names come back within
 20 sessions) and brings ~9 genuinely new names a month, so the useful unit is the episode,
 not the day. An episode starts on the first signal after 60 quiet sessions and stays LIVE
 for 60 sessions after its last signal.
 
-Queue: undecided P1-P5 episodes with a first signal aged 0-4 trading sessions. Most recently
+Queue: undecided P1-P5 episodes and BR actionable breakouts aged 0-4 trading sessions. Most recently
 commented first, then priority: P1 grade A+, P2 grade A, P3 IPO A, P4 SME BUY, P5 IPO B.
 Other views retain older episodes, P6 grade B and P7 grade X. Comments keep a timestamped history.
 
@@ -13,9 +13,9 @@ Main-board episodes queue by their Next Bull grade (nextbull_lab.grade, computed
 signal, or today while on today's list).
 
 SME stocks get their own episodes (board "sme", ids "SME.<symbol>:<breakout date>") from the SME
-BUY rule (sme_watch.buy_frame, tested in sme_bull_lab.py): a breakout to a 1-year closing high on
+BUY rule (sme_watch.buy_features / buys, tested in sme_bull_lab.py): a breakout to a 1-year closing high on
 >= 1.5x volume by an SME listed over a year, while the bull clock reads washout / early bull. On
-the list for 10 sessions after the breakout. Tagged SME.
+the list for 10 sessions after the breakout. Each breakout gets its own episode. Tagged SME.
 
 IPO buy signals (ipo_watch.py, board "ipo", ids "IPO.<symbol>:<signal date>") are one episode
 per IPO breakout that passed the IPO lab's rule on its signal date (rule A: SME board, rule B:
@@ -26,6 +26,7 @@ Files, so the daily run never touches your decisions:
                                       tags, closes since the first signal
   ui_data/signal_ledger_sme.json      the same for SME episodes (write_sme_market)
   ui_data/signal_ledger_ipo.json      the same for IPO buy signals (write_ipo_market)
+  ui_data/signal_ledger_bear.json     actionable Candidates breakouts (write_bear_market)
   state/signal_ledger.json            your decisions (status, note, buy/exit) + slot count,
                                       written only by the UI (set_entry / set_settings)
 
@@ -57,6 +58,8 @@ SME_MARKET = HERE / "ui_data" / "signal_ledger_sme.json"
 SME_PREFIX = "SME."
 IPO_MARKET = HERE / "ui_data" / "signal_ledger_ipo.json"
 IPO_PREFIX = "IPO."
+BEAR_MARKET = HERE / "ui_data" / "signal_ledger_bear.json"
+BEAR_PREFIX = "BEAR."
 USER = HERE / "state" / "signal_ledger.json"
 QUIET = 60          # sessions without a signal before a new episode can start
 LIVE = 60           # an episode stays live this many sessions after its last signal
@@ -79,6 +82,8 @@ GRADE_PRIORITY = {"A+": 1, "A": 2, "B": 6, "X": 7}
 UNGRADED = 6         # grade could not be computed: wait, like B
 IPO_PRIORITY = {"A": 3, "B": 5}
 SME_PRIORITY = 4
+BEAR_PRIORITY = 5   # sorting bucket; displayed as BR, independent of Next Bull grades
+BEAR_RULE = {"label": "BR", "group": "Bear-reversal actionable breakouts from Candidates"}
 SME_RULE = {"priority": SME_PRIORITY,
             "group": "SME BUY: breakout to a 1-year high on ≥ 1.5x volume, listed > 1 year, clock washout / early bull",
             "hit2x": "median +62% / +64% · 68% / 75% doubled in 2y (2023-24 / 2020-22, 25 / 8 trades)",
@@ -97,6 +102,8 @@ def _priority(ep: dict) -> int:
         return SME_PRIORITY
     if board == "ipo":
         return IPO_PRIORITY.get(ep.get("ipo_tier"), IPO_PRIORITY["B"])
+    if board == "bear":
+        return BEAR_PRIORITY
     return GRADE_PRIORITY.get(ep.get("grade"), UNGRADED)
 
 
@@ -219,22 +226,81 @@ def write_market(panel, i: int | None = None) -> Path:
 
 
 def write_sme_market(as_of=None) -> Path:
-    """SME episodes from the SME BUY rule (sme_watch.buy_frame), as of a date."""
+    """One SME episode per qualifying breakout, using the Candidates buy rule."""
     import pandas as pd
     from sme_data import load
-    from sme_watch import buy_frame
     w = load()
-    sig, rs = buy_frame(w)
-    dates, cols = sig.index, sig.columns
+    dates = w["close"].index
     i = len(dates) - 1 if as_of is None else int(dates.searchsorted(pd.Timestamp(as_of), "right")) - 1
-    c = w["close"].reindex(columns=cols).to_numpy()
-    c_raw = w["close_raw"].reindex(index=dates, columns=cols).to_numpy()
-    eps, first = _episodes(sig.to_numpy()[:i + 1], rs.to_numpy()[:i + 1], c, c_raw, None, dates,
-                           cols, cols.to_numpy(), i, "sme", 0)
+    if i < 0:
+        raise ValueError("no SME sessions on or before the requested date")
+    w = {k: v.iloc[:i + 1] for k, v in w.items()}
+    eps, first = _sme_breakout_episodes(w)
     return _write(SME_MARKET, {
         "as_of": str(dates[i].date()),
         "dates": [str(d.date()) for d in dates[first:i + 1]],
         "episodes": eps})
+
+
+def _sme_breakout_episodes(w: dict, clk=None) -> tuple[list[dict], int]:
+    """Freshness starts at each breakout, rather than a months-old grouped episode.
+
+    Only the latest breakout can be on today's list, matching sme_watch.buys. Earlier
+    breakouts and legacy episodes with decisions retain their prices and user state.
+    """
+    from sme_watch import BUY_CLOCK, FRESH, SLIP_MAX, bull_clock, buy_features
+    f = buy_features(w)
+    dates, cols = w["close"].index, w["close"].columns
+    i = len(dates) - 1
+    good = (bull_clock() if clk is None else clk).reindex(dates).ffill().isin(BUY_CLOCK).to_numpy()
+    bo = f["breakout"].to_numpy()
+    user_ids = set(_load_user()["entries"])
+    eps = []
+    for j in np.flatnonzero(bo.any(axis=0)):
+        sym = str(cols[j])
+        breakouts = np.flatnonzero(bo[:, j])
+        for n, b0 in enumerate(breakouts):
+            ep_id = f"{SME_PREFIX}{sym}:{dates[b0].date()}"
+            if not good[b0] or (b0 < i - BACKFILL and ep_id not in user_ids):
+                continue
+            b1 = min(i, b0 + FRESH, breakouts[n + 1] - 1 if n + 1 < len(breakouts) else i)
+            pivot = f["pivot"].iat[b0, j]
+            active = good[b0:b1 + 1] & (f["cf"].iloc[b0:b1 + 1, j].to_numpy() >= (1 - SLIP_MAX) * pivot)
+            last = b0 + int(np.flatnonzero(active)[-1])
+            on_today = bool(b1 == i and active[-1])
+            eps.append({
+                "id": ep_id, "symbol": sym, "key": sym, "board": "sme", "signal_kind": "sme_breakout",
+                "first_date": str(dates[b0].date()), "first_price": _r(f["raw"].iat[b0, j]),
+                "first_mcap": None, "first_tier_a": False, "first_small": False,
+                "tier_a_now": False, "small_now": False, "mcap_now": None,
+                "last_on": str(dates[last].date()), "sessions_on": int(active.sum()),
+                "streaks": 1 + int((np.diff(active.astype(int)) == 1).sum()),
+                "on_list_today": on_today, "queue_current": on_today,
+                "sessions_since_last": int(i - last), "live": bool(i - last <= LIVE),
+                "rs_now": _r(f["rs"].iat[i, j], 1), "start": int(b0),
+                "close": [_r(x) for x in w["close"].iloc[b0:, j]],
+                "raw": [_r(x) for x in f["raw"].iloc[b0:, j]],
+            })
+    # Retain any old grouped episode that already carries a decision or comment.
+    current_ids = {e["id"] for e in eps}
+    previous = json.loads(SME_MARKET.read_text(encoding="utf-8")) if SME_MARKET.exists() else {}
+    for old in previous.get("episodes", []):
+        if old["id"] not in user_ids or old["id"] in current_ids or old["symbol"] not in cols:
+            continue
+        b0 = int(dates.searchsorted(old["first_date"]))
+        if b0 > i:
+            continue
+        j = cols.get_loc(old["symbol"])
+        age = i - int(dates.searchsorted(old["last_on"]))
+        ep = dict(old, start=b0, queue_current=False, on_list_today=False,
+                  sessions_since_last=int(age), live=bool(age <= LIVE),
+                  close=[_r(x) for x in w["close"].iloc[b0:, j]],
+                  raw=[_r(x) for x in f["raw"].iloc[b0:, j]])
+        eps.append(ep)
+    first = min((e["start"] for e in eps), default=i)
+    for ep in eps:
+        ep["start"] -= first
+    return eps, first
 
 
 def held_ids(board: str) -> set[str]:
@@ -246,6 +312,63 @@ def held_ids(board: str) -> set[str]:
 def write_ipo_market(as_of: str, dates: list[str], eps: list[dict]) -> Path:
     """IPO buy-signal episodes, built by ipo_watch.ledger_episodes (one per breakout)."""
     return _write(IPO_MARKET, {"as_of": as_of, "dates": dates, "episodes": eps})
+
+
+def write_bear_market(candidates: dict, candles: dict, calendar) -> Path:
+    """Archive actionable Candidates breakouts; watches never create a buy signal."""
+    import pandas as pd
+    as_of = str(candidates["as_of"])
+    dates = pd.DatetimeIndex(calendar)
+    dates = dates[dates <= pd.Timestamp(as_of)]
+    if len(dates) == 0:
+        raise ValueError("no trading sessions for the bear-reversal snapshot")
+    previous = json.loads(BEAR_MARKET.read_text(encoding="utf-8")) if BEAR_MARKET.exists() else {}
+    episodes = {e["id"]: dict(e) for e in previous.get("episodes", [])}
+    active = set()
+    for c in candidates.get("actionable", []):
+        signal_date = c.get("trigger_date")
+        if not signal_date or signal_date > as_of:
+            continue
+        ep_id = f"{BEAR_PREFIX}{c['symbol']}:{signal_date}"
+        active.add(ep_id)
+        episodes.setdefault(ep_id, {"id": ep_id, "symbol": c["symbol"], "key": c["symbol"],
+                                    "first_date": signal_date, "first_price": _r(c.get("entry_close")),
+                                    "sessions_on": 0, "streaks": 1})
+        episodes[ep_id].update(sector=c.get("sector"), setups=c.get("setups", []),
+                               core_score=c.get("core_score"), pivot=c.get("pivot"),
+                               structural_stop=c.get("stop"), volume_ratio=c.get("volume_ratio"))
+    user_ids = set(_load_user()["entries"])
+    eps = []
+    for ep_id, ep in episodes.items():
+        b0 = int(dates.searchsorted(ep["first_date"]))
+        if b0 >= len(dates) or (b0 < len(dates) - 1 - BACKFILL and ep_id not in user_ids):
+            continue
+        on_today = ep_id in active
+        old_last = ep.get("last_on")
+        last_on = as_of if on_today else old_last
+        if on_today and old_last != as_of:
+            ep["sessions_on"] += 1
+        last = int(dates.searchsorted(last_on))
+        df = candles.get(ep["symbol"])
+        if df is not None and not df.empty:
+            series = df.assign(date=pd.to_datetime(df["date"])).set_index("date")["close"]
+        else:
+            old_dates = previous.get("dates", [])[ep.get("start", 0):]
+            series = pd.Series(ep.get("close", []), index=pd.to_datetime(old_dates[:len(ep.get("close", []))]), dtype=float)
+        prices = series.reindex(dates[b0:]).ffill()
+        if prices.isna().all():
+            continue  # no price history: keep the signal out of the ledger until data exists
+        ep.update(board="bear", signal_kind="bear_breakout", first_mcap=None,
+                  first_tier_a=False, first_small=False, tier_a_now=False, small_now=False,
+                  mcap_now=None, rs_now=None, first_price=_r(prices.iloc[0]),
+                  last_on=last_on, on_list_today=on_today, queue_current=on_today,
+                  sessions_since_last=int(len(dates) - 1 - last), live=bool(len(dates) - 1 - last <= LIVE),
+                  start=b0, close=[_r(x) for x in prices], raw=[_r(x) for x in prices])
+        eps.append(ep)
+    first = min((e["start"] for e in eps), default=len(dates) - 1)
+    for ep in eps:
+        ep["start"] -= first
+    return _write(BEAR_MARKET, {"as_of": as_of, "dates": [str(d.date()) for d in dates[first:]], "episodes": eps})
 
 
 # --------------------------------------------------------------------------- user side
@@ -367,9 +490,9 @@ def set_settings(patch: dict) -> dict:
 
 # --------------------------------------------------------------------------- merged view
 def _load_markets() -> list[dict]:
-    """Main-board market first, then SME, then IPO; each keeps its own dates."""
+    """Each strategy keeps its own market file and signal dates."""
     out = []
-    for board, p in (("main", MARKET), ("sme", SME_MARKET), ("ipo", IPO_MARKET)):
+    for board, p in (("main", MARKET), ("sme", SME_MARKET), ("ipo", IPO_MARKET), ("bear", BEAR_MARKET)):
         if p.exists():
             out.append({**json.loads(p.read_text(encoding="utf-8")), "board": board})
     if not out:
@@ -433,9 +556,11 @@ def view() -> dict:
             pri = _priority(ep)
             age = len(session_dates) - bisect_right(session_dates, ep["first_date"])
             fresh = 0 <= age < QUEUE_SIGNAL_AGE and ep["first_date"] <= session_dates[-1]
-            in_queue = shown in OPEN and pri <= QUEUE_MAX_PRIORITY and fresh
+            in_queue = shown in OPEN and pri <= QUEUE_MAX_PRIORITY and fresh and ep.get("queue_current", True)
             comments = _comments(ue)
             row.update(board=board, sme=board == "sme", status=status, shown_status=shown,
+                       source_label={"main": "Next Bull", "sme": "SME buy", "ipo": "IPO", "bear": "Bear reversal"}[board],
+                       priority_label="BR" if board == "bear" else f"P{pri}",
                        note=ue.get("note", ""),
                        comments=comments, note_updated_at=ue.get("note_updated_at"),
                        first_signal_age_sessions=age, in_queue=in_queue,
@@ -460,20 +585,24 @@ def view() -> dict:
         r["queue_rank"] = n
     slots = int(u.get("slots", DEFAULT_SLOTS))
     rules = dict(m.get("rules") or {"quiet": QUIET, "live": LIVE, "trail": TRAIL})
-    rules.update(sme=SME_RULE, ipo=IPO_RULE,
+    rules.update(sme=SME_RULE, ipo=IPO_RULE, bear=BEAR_RULE,
                  queue_max_priority=QUEUE_MAX_PRIORITY, queue_signal_age=QUEUE_SIGNAL_AGE,
                  priority={str(k): {"group": g, "evidence": h} for k, (g, h) in PRIORITY.items()})
     as_of = {x["board"]: x["as_of"] for x in markets}
     return {"as_of": m["as_of"], "sme_as_of": as_of.get("sme"), "ipo_as_of": as_of.get("ipo"),
+            "bear_as_of": as_of.get("bear"),
             "rules": rules, "slots": slots,
             "used": len(holdings), "free": max(0, slots - len(holdings)),
             "counts": {"queue": len(queue), "holdings": len(holdings),
+                       "queue_by_source": {board: sum(r["board"] == board for r in queue)
+                                           for board in ("main", "sme", "ipo", "bear")},
                        "stop_alerts": sum(1 for r in holdings
                                           if (r.get("position") or {}).get("stop_hit")),
                        "new_this_week": sum(1 for r in rows if r["new_this_week"]),
                        "on_list_today": sum(1 for r in rows if r["on_list_today"]),
                        "sme": sum(1 for r in rows if r["sme"]),
                        "ipo": sum(1 for r in rows if r["board"] == "ipo"),
+                       "bear": sum(1 for r in rows if r["board"] == "bear"),
                        "episodes": len(rows)},
             "rows": rows}
 

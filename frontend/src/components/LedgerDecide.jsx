@@ -25,6 +25,7 @@ export function LedgerGrade({ r }) {
 export function Tags({ r }) {
   return (
     <>
+      {r.board === 'bear' && <span className="pill hi" title={`Candidates actionable breakout · ${(r.setups || []).join('+')} · core score ${r.core_score ?? '–'}/85`}>Bear reversal</span>}{' '}
       {r.sme &&<span className="pill amber" title="SME board — breakout buy signal (sme_bull_lab.py); trades in lots, exits can be slow">SME</span>}{' '}
       {r.board === 'ipo' && (
         <span className="pill green" title={`IPO buy signal, rule ${r.ipo_tier} (${r.ipo_board === 'SME' ? 'SME board' : 'main board'}) · listed ${r.listing_date} · listing gain ${fmtPct(r.listing_gain, 0)} · rank ${r.ipo_rank != null ? Math.round(r.ipo_rank) : '–'}/100 (smaller, calmer listings first; queued by it inside the group)`}>
@@ -61,10 +62,17 @@ export function OnList({ r }) {
 }
 
 export function CommentTime({ value }) {
-  return value ? <time dateTime={value}>{new Date(value).toLocaleString(undefined, {
+  if (!value) return <span className="mut">Time unavailable</span>;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return <time dateTime={value} title="Backfilled from the buy date; original comment time unavailable">
+      {new Date(`${value}T00:00:00`).toLocaleDateString(undefined, {
+        year: 'numeric', month: 'short', day: 'numeric',
+      })} · buy date</time>;
+  }
+  return <time dateTime={value}>{new Date(value).toLocaleString(undefined, {
     year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
     second: '2-digit', timeZoneName: 'short',
-  })}</time> : <span className="mut">Time unavailable</span>;
+  })}</time>;
 }
 
 /** Decide on one episode and append timestamped comments. */
@@ -122,7 +130,7 @@ export function DecideModal({ row, asOf, onClose, onSaved }) {
             <div className="title" id="ledger-decide-title">{row.symbol} <Tags r={row} /></div>
             <div className="subtitle">
               first signal {row.first_date} at ₹{fmtNum(row.first_price, 2)} · on the list {row.sessions_on} sessions
-              ({row.streaks}x) · priority P{row.priority}
+              ({row.streaks}x) · {row.priority_label || `P${row.priority}`}
             </div>
           </div>
           <button type="button" className="btn ghost" onClick={onClose} aria-label="close">✕</button>

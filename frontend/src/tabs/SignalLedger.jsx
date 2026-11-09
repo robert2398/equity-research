@@ -9,6 +9,7 @@ const VIEWS = [
   ['passed', 'Passed', (r) => r.status === 'PASSED'],
   ['exited', 'Exited', (r) => r.status === 'EXITED'],
   ['expired', 'Expired', (r) => r.shown_status === 'EXPIRED'],
+  ['bear', 'Bear reversal', (r) => r.board === 'bear'],
   ['ipo', 'IPO', (r) => r.board === 'ipo'],
   ['sme', 'SME', (r) => r.sme],
   ['all', 'All', () => true],
@@ -24,7 +25,7 @@ function HowTo({ rules }) {
   return (
     <div className="steps">
       <div className="step"><span className="n">1</span><span className="t">Review fresh signals</span>
-        <div className="d">The queue contains undecided P1–P{rules.queue_max_priority} signals fewer than{' '}
+        <div className="d">The queue combines actionable bear-reversal breakouts with P1–P{rules.queue_max_priority} Next Bull, SME buy and IPO signals fewer than{' '}
           {rules.queue_signal_age} trading sessions old (age 0–{rules.queue_signal_age - 1}).
           Age is measured from the first signal to the latest data session.</div></div>
       <div className="step"><span className="n">2</span><span className="t">Fill free slots in priority order</span>
@@ -32,7 +33,8 @@ function HowTo({ rules }) {
           <div key={g.p} style={{ marginTop: 3 }} title={g.tip}>P{g.p} {g.tag} {g.label} — {g.ev}</div>))}
           <div style={{ marginTop: 3 }}>(every signal 2016–24, bought at the signal close, 50% trailing stop or 2 years) ·
             main-board names are graded on their first signal, or today while on today&apos;s list ·
-            latest comment first, then priority for rows without a timestamp</div></div></div>
+            latest comment first, then priority for rows without a timestamp</div>
+          <div style={{ marginTop: 3 }}>BR = actionable bear-reversal breakout from Candidates; its own core-score rule applies.</div></div></div>
       <div className="step"><span className="n">3</span><span className="t">Decide and write why</span>
         <div className="d">Open the Dossier, apply the vetoes, mark Bought / Passed / Wait with a note. Pass notes
           are the data that will later show whether the fundamental filters help.</div></div>
@@ -71,7 +73,7 @@ export default function SignalLedger({ onOpen }) {
   return (
     <div>
       <h1>Signal Ledger</h1>
-      <div className="small">every BAGGER SIGNAL episode of the last year, plus IPO buy signals
+      <div className="small">actionable bear-reversal breakouts, BAGGER SIGNAL episodes of the last year, plus IPO buy signals
         (<span className="pill green">IPO A/B</span>) and SME buy signals
         (<span className="pill amber">SME</span>), your decision on each, and the exit
         rule on what you hold · data as of {data.as_of}
@@ -88,7 +90,8 @@ export default function SignalLedger({ onOpen }) {
             {slotErr && <span className="neg"> {slotErr}</span>}</div></div>
         <div className="card"><div className="label">Queue</div>
           <div className="value">{c.queue}</div>
-          <div className="note">P1–P{data.rules.queue_max_priority} · first signal age &lt; {data.rules.queue_signal_age} trading sessions</div></div>
+          <div className="note">first signal age &lt; {data.rules.queue_signal_age} trading sessions</div>
+          <div className="note">Bear reversal {c.queue_by_source?.bear || 0} · SME {c.queue_by_source?.sme || 0} · Next Bull {c.queue_by_source?.main || 0} · IPO {c.queue_by_source?.ipo || 0}</div></div>
         <div className="card"><div className="label">New this week</div>
           <div className="value pos">{c.new_this_week}</div>
           <div className="note">first signal in the last 5 sessions</div></div>
@@ -119,7 +122,7 @@ export default function SignalLedger({ onOpen }) {
         {rows.length === 0 ? <div className="empty-ai">nothing here yet</div> : (
           <table>
             <thead><tr>
-              <th>#</th><th title="priority group · Next Bull grade (hover for vetoes; ? = no fundamentals on file)">Pri</th><th>Symbol</th><th>First signal</th>
+              <th>#</th><th title="P1–P5 for Next Bull / SME / IPO; BR for actionable bear-reversal breakouts">Pri</th><th>Source</th><th>Symbol</th><th>First signal</th>
               <th title="sessions on the list · separate streaks">On list</th><th>Today</th>
               <th>Since signal</th><th>Mcap ₹cr</th><th>Status</th>
               {showPos && <><th>Buy ₹</th><th>Return</th><th title="exit if a close falls to this">Stop ₹</th></>}
@@ -131,7 +134,8 @@ export default function SignalLedger({ onOpen }) {
                 return (
                   <tr key={r.id} onClick={() => setEdit(r)}>
                     <td className="mut">{r.queue_rank && view === 'queue' ? r.queue_rank : i + 1}</td>
-                    <td style={{ whiteSpace: 'nowrap' }}><b>P{r.priority}</b> <LedgerGrade r={r} /></td>
+                    <td style={{ whiteSpace: 'nowrap' }}><b>{r.priority_label || `P${r.priority}`}</b> <LedgerGrade r={r} /></td>
+                    <td className="small">{r.source_label}</td>
                     <td>{r.symbol} <Tags r={r} /></td>
                     <td title={`${r.first_signal_age_sessions} trading sessions since the first signal`}>{r.first_date} · ₹{fmtNum(r.first_price, 1)}</td>
                     <td>{r.sessions_on}d · {r.streaks}x</td>
