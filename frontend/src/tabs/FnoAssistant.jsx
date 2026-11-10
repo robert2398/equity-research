@@ -155,10 +155,30 @@ function IntradayChart({ symbol, interval, signal, revision }) {
   </div>;
 }
 
+function SessionRules({ config, opening }) {
+  const session = config.session;
+  const setups = config.setups || [];
+  const drive = setups.includes('OPENING_DRIVE') && config.opening_drive?.enabled ? config.opening_drive : null;
+  const trend = setups.filter((name) => name !== 'OPENING_DRIVE');
+  const exits = { ...(config.exit?.default || {}), ...(drive ? config.exit?.OPENING_DRIVE || {} : {}) };
+  const parts = [];
+  if (drive) {
+    parts.push(`Opening drive: ranked once at ${drive.entry_start}, top ${drive.top_n} by opening volume, entry open for ${number(drive.entry_valid_minutes, 0)} minutes`
+      + (opening?.note ? ` (${opening.note})` : opening?.window_open ? ` (${opening.armed} armed)` : ''));
+  }
+  if (trend.length) parts.push(`${trend.map(label).join(', ')} entries ${session.entry_start}–${session.last_entry}`);
+  if (exits.trail_activate_r != null) {
+    parts.push(`Stop trails ${number(exits.trail_distance_r, 1)}R behind the best price after +${number(exits.trail_activate_r, 1)}R`);
+  }
+  if (exits.time_stop_minutes != null) parts.push(`Time stop ${number(exits.time_stop_minutes, 0)} minutes`);
+  parts.push(`Flat by ${session.flat_at} IST`);
+  return <>{parts.join(' · ')}.</>;
+}
+
 function CandidatesTable({ side, rows, selectedKey, onSelect }) {
   return <div className={`panel fno-candidates fno-${side.toLowerCase()}`}>
     <div className="fno-section-head"><h2>{side === 'CE' ? 'CE · Bullish' : 'PE · Bearish'}</h2><span className="small">{rows.length} candidates</span></div>
-    {!rows.length ? <p className="fno-empty">No qualifying {side} entries. Waiting for trend, setup, and contract checks.</p> : <div className="fno-scroll">
+    {!rows.length ? <p className="fno-empty">No qualifying {side} entries right now.</p> : <div className="fno-scroll">
       <table><thead><tr><th>Stock / setup</th><th>Score</th><th>Entry / stop</th><th>Room</th><th>Status</th></tr></thead>
         <tbody>{rows.map((row) => <tr key={rowKey(row)} className={selectedKey === rowKey(row) ? 'selected' : ''}>
           <td><button type="button" className="fno-symbol" onClick={() => onSelect(row)}>{row.symbol}</button>
@@ -308,6 +328,7 @@ function CloseTrade({ trade, onCancel, onSave, busy }) {
       <label>Exit reason<select value={reason} onChange={(event) => setReason(event.target.value)}>
         <option value="MANUAL_CLOSE">Manual close</option><option value="STOP">Structural stop</option>
         <option value="PREMIUM_STOP">Premium limit</option><option value="TARGET">Target reached</option>
+        <option value="TRAILING_STOP">Trailing stop</option><option value="NO_FOLLOW_THROUGH">No progress</option>
         <option value="TIME_STOP">Time stop</option><option value="SESSION_CUTOFF">Session cutoff</option>
       </select></label>
     </div>
@@ -425,7 +446,7 @@ export default function FnoAssistant() {
 
   return <div className="fno-assistant">
     <div className="fno-title-row"><div><h1>F&O Assistant</h1>
-      <div className="sub">Hourly direction · 5-minute entries · CE / PE · Intraday</div></div>
+      <div className="sub">Opening drive · Fast exits · CE / PE · Intraday</div></div>
       <div className="fno-actions"><span className="small">Updates every 15 seconds</span>
         <button type="button" className="btn" disabled={!!busy} onClick={scan}>{busy === 'scan' ? 'Scanning...' : 'Scan stored data'}</button>
         <button type="button" className="btn ghost" onClick={refresh}>Refresh</button></div></div>
@@ -473,7 +494,7 @@ export default function FnoAssistant() {
       <CandidatesTable side="PE" rows={pe} selectedKey={selectedKey} onSelect={select} />
     </div>
     <p className="small fno-timing">Scan as of {dateTime(candidates.as_of || status.as_of)} IST · Entries need a completed 5-minute signal and a suitable contract. Scores rank evidence; they are not probabilities.
-      {status.config?.session && <><br />New entries {status.config.session.entry_start}–{status.config.session.last_entry} · Flat by {status.config.session.flat_at} IST · Maximum hold 3 hours.</>}</p>
+      {status.config?.session && <><br /><SessionRules config={status.config} opening={status.opening_drive} /></>}</p>
 
     <section className="fno-detail-section" ref={chartSectionRef} id="fno-stock-charts" aria-label="Selected stock charts and trade plan">
     <div className="fno-section-head fno-chart-title"><h2 ref={chartTitleRef} tabIndex="-1">{selectedSymbol ? `${selectedSymbol} · Charts and trade plan` : 'Stock charts'}</h2>
@@ -483,7 +504,11 @@ export default function FnoAssistant() {
         <div className="small">{label(selected.setup)} · Daily {label(selected.daily_bias || selected.metrics?.daily_bias)} · Hourly {label(selected.hourly_bias || selected.metrics?.hourly_bias)}</div></div>
         {eligibleFill && <button type="button" className="btn primary" onClick={() => setFillId(selected.id)}>Paper buy signal / record fill</button>}</div>
       <div className="facts fno-detail-facts">
-        {[['Entry', selected.entry], ['Stop', selected.stop], ['Target', selected.target], ['Chart R', selected.chart_rr],
+        {[['Entry', selected.entry], ['Stop', selected.stop],
+          // The opening drive has no profit target: its stop trails the best price instead.
+          ...(selected.setup === 'OPENING_DRIVE'
+            ? [['Far cap', selected.target], ['Opening rank', selected.evidence?.opening_rank]]
+            : [['Target', selected.target], ['Chart R', selected.chart_rr]]),
           ['RVOL', selected.evidence?.slot_rvol ?? selected.evidence?.rvol ?? selected.metrics?.rvol],
           ['RS excess · 30m %', relativeReturn == null ? null : relativeReturn * 100]].map(([name, value]) =>
           <div className="fact" key={name}><div className="k">{name}</div><div className="v">{number(value)}</div></div>)}
@@ -493,6 +518,7 @@ export default function FnoAssistant() {
         <b>{contract.symbol}</b><span>{dateTime(`${contract.expiry}T00:00:00+05:30`).split(',')[0]} · {number(contract.strike, 0)} {contract.side || selected.side}</span>
         <span>Bid {number(contract.bid)} / Ask {number(contract.ask)}</span><span>Spread {number(contract.spread_pct)}%</span>
         <span>Quote age {number(contract.quote_age_seconds, 0)}s</span><span>Delta {number(contract.delta)} · IV {number(contract.iv == null ? null : contract.iv * 100)}%</span>
+        {contract.cost_underlying_bps != null && <span title="Stock move needed to pay for the spread and charges">Round-trip cost {number(contract.cost_underlying_bps, 1)} bps of stock</span>}
       </div> : <p className="small">No qualifying option selected.</p>}
       {contract?.greeks_source && <p className="small">IV / delta: {contract.greeks_source}</p>}
       <div className="small fno-expiry">Confirmed {dateTime(selected.signal_time)} · Entry expires {dateTime(selected.expires_at)} IST</div>

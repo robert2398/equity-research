@@ -10,9 +10,12 @@ import uuid
 
 import pandas as pd
 
+from .config import exit_policy
+from .contracts import chase_limit
 from .engine import analyze_symbol
 from .features import (as_timestamp, benchmark_direction, closed_bars, enrich, normalize_frame,
                        pivots, relative_return, session_time)
+from .opening import opening_drive_signals, opening_stats, window
 from .regime import classify
 
 HORIZONS = (5, 10, 30, 60, 120, 180)
@@ -33,7 +36,25 @@ def _event_summary(events: list[dict], metadata: dict) -> dict:
             "initial_stop_hits": sum(h["initial_stop_hit_by_horizon"] for h in available),
             "mean_fixed_stop_R": sum(h["fixed_stop_outcome_R"] for h in available) / len(available) if available else None}
     minimum = metadata["minimum_triggered_target"]
+
+    def group(rows):
+        r = [e["gross_underlying_R"] for e in rows]
+        gross = [e["gross_underlying_bps"] for e in rows]
+        net = [e["net_underlying_bps"] for e in rows]
+        count = len(rows)
+        return {"trades": count, "win_fraction_gross": sum(v > 0 for v in r) / count,
+                "win_fraction_net": sum(v > 0 for v in net) / count,
+                "mean_gross_underlying_R": sum(r) / count,
+                "mean_gross_underlying_bps": sum(gross) / count,
+                "mean_net_underlying_bps": sum(net) / count,
+                "mean_holding_minutes": sum(e["holding_minutes"] for e in rows) / count}
+
+    setups = sorted({e["setup"] for e in filled})
     return {**metadata, "events": len(events), "filled": len(filled), "triggered": len(filled),
+            "assumed_round_trip_cost_bps": filled[0]["assumed_cost_bps"] if filled else None,
+            "mean_gross_underlying_bps": group(filled)["mean_gross_underlying_bps"] if filled else None,
+            "mean_net_underlying_bps": group(filled)["mean_net_underlying_bps"] if filled else None,
+            "setup_results": {name: group([e for e in filled if e["setup"] == name]) for name in setups},
             "unfilled": len(events) - len(filled), "minimum_triggered_met": len(filled) >= minimum,
             "metrics_basis": "underlying_direction_adjusted_gross",
             "mean_gross_underlying_R": sum(values) / len(values) if values else None,
@@ -209,7 +230,13 @@ def simulate_signal(signal: dict, future: pd.DataFrame, config: dict, end_at=Non
     if frame.empty:
         result["reason"] = "NO_FUTURE_CANDLES"
         return result
-    frame = frame.loc[(frame["timestamp"] >= available)
+    # Live alerts fire seconds after the signal candle closes. Unless the older,
+    # stricter convention is requested, the candle that opened during that
+    # finalization grace is therefore eligible; its open is the first fill price.
+    first_bar = available
+    if not config.get("replay", {}).get("skip_confirmation_bar", False):
+        first_bar = available - pd.Timedelta(seconds=grace)
+    frame = frame.loc[(frame["timestamp"] >= first_bar)
                       & (frame["timestamp"].dt.date == available.date())].reset_index(drop=True)
     if end is not None:
         frame = frame.loc[frame["timestamp"] + pd.Timedelta(minutes=5) <= end].reset_index(drop=True)
@@ -233,7 +260,7 @@ def simulate_signal(signal: dict, future: pd.DataFrame, config: dict, end_at=Non
                 result["reason"] = "INVALIDATED_BEFORE_ENTRY"
                 return result
             continue
-        if sign * (fill - entry) > float(rules.get("chase_atr", .25)) * frozen_atr:
+        if sign * (fill - entry) > chase_limit(signal, config):
             result["reason"] = "CHASE_LIMIT"
             return result
         unit = sign * (fill - stop)
@@ -246,10 +273,21 @@ def simulate_signal(signal: dict, future: pd.DataFrame, config: dict, end_at=Non
     if fill_index is None:
         return result
     unit = abs(entry - stop)
-    deadline = min(fill_time + pd.Timedelta(minutes=float(risk.get("max_hold_minutes", 180))),
-                   session_time(fill_time, config.get("session", {}).get("flat_at", "15:10")))
+    policy = signal.get("exit_policy") or exit_policy(signal.get("setup"), config)
+    flat_deadline = session_time(fill_time, config.get("session", {}).get("flat_at", "15:10"))
+    hold_deadline = fill_time + pd.Timedelta(minutes=float(risk.get("max_hold_minutes", 180)))
+    time_deadline = (fill_time + pd.Timedelta(minutes=float(policy["time_stop_minutes"]))
+                     if policy.get("time_stop_minutes") is not None else None)
+    deadline = min(hold_deadline, flat_deadline)
+    if time_deadline is not None:
+        deadline = min(deadline, time_deadline)
     if end is not None:
         deadline = min(deadline, end)
+
+    def deadline_reason():
+        return ("SESSION_CUTOFF" if deadline == flat_deadline else
+                "TIME_STOP" if deadline == time_deadline else
+                "MAX_HOLD" if deadline == hold_deadline else "STUDY_END")
     if deadline <= fill_time:
         result["reason"] = "SESSION_CUTOFF_BEFORE_ENTRY"
         return result
@@ -260,15 +298,14 @@ def simulate_signal(signal: dict, future: pd.DataFrame, config: dict, end_at=Non
     trail = bool(config.get("replay", {}).get("trailing", True))
     last_row = None
     exit_price, exit_at, reason = entry, fill_time, "DATA_END"
-    progress = float(risk.get("progress_minutes", 20))
-    progress_r = float(risk.get("min_progress_r", .5))
+    progress = float(policy["progress_minutes"])
+    progress_r = float(policy["min_progress_r"])
+    activate, distance = policy.get("trail_activate_r"), policy.get("trail_distance_r")
     for index in range(fill_index, len(frame)):
         row = frame.iloc[index]
         start, finish = row["timestamp"], row["timestamp"] + pd.Timedelta(minutes=5)
         if finish > deadline:
-            reason = ("SESSION_CUTOFF" if deadline == session_time(fill_time, config.get("session", {}).get("flat_at", "15:10"))
-                      else "MAX_HOLD" if deadline == fill_time + pd.Timedelta(minutes=float(risk.get("max_hold_minutes", 180)))
-                      else "STUDY_END")
+            reason = deadline_reason()
             break
         if last_row is not None and start - last_row["timestamp"] > pd.Timedelta(minutes=5):
             reason = "DATA_GAP"
@@ -295,14 +332,18 @@ def simulate_signal(signal: dict, future: pd.DataFrame, config: dict, end_at=Non
             mfe = max(mfe, favorable)
         mae = min(mae, adverse)
         exit_price = float(row["close"])
-        if (finish - fill_time).total_seconds() / 60 >= progress and mfe < progress_r * unit:
+        if progress > 0 and (finish - fill_time).total_seconds() / 60 >= progress and mfe < progress_r * unit:
             reason = "NO_FOLLOW_THROUGH"
             break
         if finish >= deadline:
-            reason = ("SESSION_CUTOFF" if deadline == session_time(fill_time, config.get("session", {}).get("flat_at", "15:10"))
-                      else "MAX_HOLD" if deadline == fill_time + pd.Timedelta(minutes=float(risk.get("max_hold_minutes", 180)))
-                      else "STUDY_END")
+            reason = deadline_reason()
             break
+        if activate is not None and distance is not None and mfe >= float(activate) * unit:
+            # Bar extremes stand in for live prices; the tightened stop only
+            # applies from the next bar, where a gap through it fills at the open.
+            ratchet = entry + sign * (mfe - float(distance) * unit)
+            if sign * (ratchet - current_stop) > 0:
+                current_stop = ratchet
         if trail and mfe >= unit:
             observed = frame.iloc[fill_index:index + 1]
             points = [p for p in pivots(observed) if p["kind"] == ("LOW" if sign == 1 else "HIGH")]
@@ -310,8 +351,13 @@ def simulate_signal(signal: dict, future: pd.DataFrame, config: dict, end_at=Non
                 tightened = point["price"] - sign * frozen_atr * float(rules.get("stop_buffer_atr", .1))
                 if sign * (tightened - current_stop) > 0:
                     current_stop = tightened  # effective only on the next bar
+    cost_bps = float(config.get("replay", {}).get("cost_bps", 0))
+    gross_bps = 1e4 * sign * (exit_price - entry) / entry
     result.update(exit_price=float(exit_price), exit_time=exit_at.isoformat(), exit_reason=reason,
                   gross_underlying_R=sign * (exit_price - entry) / unit,
+                  gross_underlying_bps=gross_bps, assumed_cost_bps=cost_bps,
+                  net_underlying_bps=gross_bps - cost_bps, risk_bps=1e4 * unit / entry,
+                  exit_policy=dict(policy),
                   mfe_R=max(0., mfe / unit), mae_R=min(0., mae / unit),
                   holding_minutes=max(0., (exit_at - fill_time).total_seconds() / 60),
                   final_stop=current_stop)
@@ -479,7 +525,12 @@ def run_replay(store, config: dict, start: str, end: str, symbols: list | None =
     checkpoint_path = replay.get("checkpoint_path")
     warnings = ["Underlying signal event study only: gross chart R, not option P&L or portfolio profitability.",
                 "Costs, option liquidity, Greeks, and complete historical event/ban checks are not simulated.",
-                "Five-minute OHLC cannot establish intrabar order; stop is assumed first and the partial confirmation bar is skipped."]
+                "Five-minute OHLC cannot establish intrabar order; stop is assumed first and "
+                + ("the partial confirmation bar is skipped." if replay.get("skip_confirmation_bar", False) else
+                   "the candle that opens as a signal becomes final is tradable from its open, as it is live.")]
+    if float(replay.get("cost_bps", 0)) > 0:
+        warnings.append(f"Net figures deduct an assumed {float(replay['cost_bps']):g} bps round-trip cost per trade; "
+                        "it is a configured estimate, not a measured option spread.")
     if end_day > now.date():
         end_day = now.date()
         warnings.append("Future study dates were truncated to available time.")
@@ -513,6 +564,39 @@ def run_replay(store, config: dict, start: str, end: str, symbols: list | None =
     progress_failed = False
     seen = set()
     cooldown = pd.Timedelta(minutes=float(config.get("risk", {}).get("cooldown_minutes", 15)))
+    opening_frames = {}
+    opening_enabled = (config.get("opening_drive", {}).get("enabled", False)
+                       and "OPENING_DRIVE" in config.get("setup", {}).get("enabled", []))
+    opening_notes = Counter()
+    enabled_setups = config.get("setup", {}).get("enabled") or ("PULLBACK", "COMPRESSION_RETEST")
+    trend_enabled = bool({"PULLBACK", "COMPRESSION_RETEST"} & set(enabled_setups))
+
+    def load(symbol):
+        if symbol not in cached:
+            cached[symbol] = {interval: store.read_bars(symbol, interval)
+                              for interval in ("day", "60minute", "5minute")}
+        return cached[symbol]
+
+    def opening_for(day, members):
+        """Arm the session's opening-drive leaders from first candles only."""
+        first, confirmed, _ = window(as_timestamp(day), config)
+        if confirmed > now:
+            return {}
+        rows = []
+        for stock in members:
+            symbol = stock["symbol"]
+            if symbol not in opening_frames:
+                data = load(symbol)
+                opening_frames[symbol] = (closed_bars(data["day"], 1440, now, config),
+                                          enrich(closed_bars(data["5minute"], 5, now, config), config))
+            daily, featured = opening_frames[symbol]
+            known = daily.iloc[:daily["timestamp"].searchsorted(first.normalize(), side="left")]
+            rows.append(opening_stats(symbol, known, featured, confirmed, config,
+                                      stock.get("sector", "UNMAPPED"), float(stock.get("tick_size", .05))))
+        signals, note = opening_drive_signals(rows, len(members), confirmed, config)
+        if note:
+            opening_notes[note.split(":")[0]] += 1
+        return {signal["symbol"]: signal for signal in signals}
 
     def notify(value):
         nonlocal progress_failed
@@ -536,6 +620,7 @@ def run_replay(store, config: dict, start: str, end: str, symbols: list | None =
                 "skipped_missing_membership_days": len(skipped_dates), "errors": errors,
                 "evaluations": evaluations, "prefiltered": prefiltered, "cheap_prefiltered": cheap_prefiltered,
                 "missing_data_symbol_sessions": missing_data, "screen_rejection_reasons": dict(rejections),
+                "opening_drive_sessions_without_ranking": dict(opening_notes),
                 "current_universe_fallback": allow_current}
 
     for day in pd.date_range(start_day, end_day, freq="D"):
@@ -549,14 +634,12 @@ def run_replay(store, config: dict, start: str, end: str, symbols: list | None =
                 skipped_dates.append(key)
                 continue
             universe, source = latest, "current_universe_survivor_biased"
-        for stock in (universe or {}).get("stocks", []):
+        members = [stock for stock in (universe or {}).get("stocks", [])
+                   if selected is None or stock["symbol"] in selected]
+        opening = opening_for(day, members) if opening_enabled else {}
+        for stock in members:
             symbol = stock["symbol"]
-            if selected is not None and symbol not in selected:
-                continue
-            if symbol not in cached:
-                cached[symbol] = {interval: store.read_bars(symbol, interval)
-                                  for interval in ("day", "60minute", "5minute")}
-            data = cached[symbol]
+            data = load(symbol)
             five = data["5minute"]
             if five.empty:
                 missing_data += 1
@@ -566,6 +649,20 @@ def run_replay(store, config: dict, start: str, end: str, symbols: list | None =
             upper = five["timestamp"].searchsorted(session_start + pd.Timedelta(days=1), side="left")
             session = five.iloc[lower:upper].reset_index(drop=True)
             busy_until = None
+            drive = opening.get(symbol)
+            if drive is not None and drive["id"] not in seen:
+                seen.add(drive["id"])
+                try:
+                    closing = session_time(as_timestamp(day), config.get("session", {}).get("continuous_close", "15:15"))
+                    event = simulate_signal(drive, session, config, min(now, closing))
+                    event["membership_source"] = source
+                    event["signal_score"] = drive["score"]
+                    event["opening_rank"] = drive["evidence"]["opening_rank"]
+                    events.append(event)
+                    busy_until = (as_timestamp(event["exit_time"]) + cooldown if event["status"] == "CLOSED"
+                                  else as_timestamp(drive["expires_at"]))
+                except Exception as error:
+                    errors.append({"symbol": symbol, "date": key, "error": f"{type(error).__name__}: {error}"})
             per_stock = deepcopy(config)
             per_stock["tick_size"] = float(stock.get("tick_size", .05))
             sector = stock.get("sector", "UNMAPPED")
@@ -582,11 +679,13 @@ def run_replay(store, config: dict, start: str, end: str, symbols: list | None =
                     comparison_symbol = sector_symbol
             prepared_key = (symbol, comparison_symbol, sector)
             mapped = comparison_symbol != benchmark_name
-            if fast and prepared_key not in prepared_cache:
+            if fast and trend_enabled and prepared_key not in prepared_cache:
                 prepared_cache[prepared_key] = PreparedReplay(data, comparison, per_stock, now, benchmark_cache,
                                                             broad_benchmark=benchmark if mapped else None)
             candidates = session["timestamp"]
-            if fast and replay.get("fast_precheck", True):
+            if not trend_enabled:
+                candidates = candidates.iloc[:0]
+            elif fast and replay.get("fast_precheck", True):
                 candidates = prepared_cache[prepared_key].candidates_for_session(session_start)
                 def in_entry_window(stamps):
                     cutoffs = stamps + pd.Timedelta(minutes=5, seconds=float(config.get("data", {}).get("finalization_seconds", 3)))

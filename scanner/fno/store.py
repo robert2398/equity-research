@@ -129,6 +129,26 @@ class FnoStore:
         frame["timestamp"] = pd.to_datetime(frame.timestamp, unit="ns", utc=True).dt.tz_convert(TZ)
         return frame.sort_values("timestamp").reset_index(drop=True)
 
+    def read_slot_bars(self, symbol: str, interval: str, slot: str, limit: int, since=None) -> pd.DataFrame:
+        """Most recent candles starting at one clock time (IST, "HH:MM"), oldest first.
+
+        ``since`` bounds how far back the search looks, which keeps it quick.
+        """
+        hour, minute = map(int, slot.split(":"))
+        if isinstance(limit, bool) or int(limit) < 1:
+            raise ValueError("limit must be positive")
+        # India has a fixed UTC+05:30 offset, so a clock time is a fixed second of the UTC day.
+        second = (hour * 3600 + minute * 60 - 19800) % 86400
+        earliest = int(as_timestamp(since).tz_convert("UTC").value) if since is not None else 0
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT timestamp,open,high,low,close,volume FROM bars WHERE symbol=? AND interval=? "
+                "AND timestamp>=? AND timestamp % 86400000000000 = ? ORDER BY timestamp DESC LIMIT ?",
+                (symbol, interval, earliest, second * 1_000_000_000, int(limit))).fetchall()
+        frame = pd.DataFrame(rows, columns=BAR_COLUMNS)
+        frame["timestamp"] = pd.to_datetime(frame.timestamp, unit="ns", utc=True).dt.tz_convert(TZ)
+        return frame.sort_values("timestamp").reset_index(drop=True)
+
     def get_state(self, key, default=None):
         with self._connection() as conn:
             row = conn.execute("SELECT payload FROM state WHERE key=?", (str(key),)).fetchone()

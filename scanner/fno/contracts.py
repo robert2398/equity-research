@@ -56,6 +56,27 @@ def implied_volatility(price, spot, strike, years, rate, side) -> float | None:
     return (low + high) / 2
 
 
+def estimated_charges(premium: float, quantity: float, lot_size: float, config: dict) -> float:
+    """Round-trip charges: a fixed part per lot plus a share of premium turnover.
+
+    The percentage covers the levies that scale with premium (securities
+    transaction tax on the sale and exchange fees on both legs). Both parts
+    are configurable estimates rather than a statutory schedule.
+    """
+    cfg = config["contracts"]
+    lots = float(quantity) / float(lot_size)
+    return (lots * float(cfg["charges_roundtrip_per_lot_inr"])
+            + float(premium) * float(quantity) * float(cfg.get("charges_pct_of_premium", 0)) / 100)
+
+
+def chase_limit(signal: dict, config: dict) -> float:
+    """Furthest the underlying may run past the entry level and still be taken."""
+    explicit = signal.get("chase_distance")
+    if explicit is not None:
+        return float(explicit)
+    return float(signal["atr"]) * float(config["setup"]["chase_atr"])
+
+
 def evaluate_contract(contract: dict, quote: dict, signal: dict,
                       spot: float, now, config: dict) -> dict:
     cfg, risk = config["contracts"], config["risk"]
@@ -106,12 +127,24 @@ def evaluate_contract(contract: dict, quote: dict, signal: dict,
             reasons.append("Delta outside configured range")
         target_years = max(0, years - cfg["scenario_minutes"] / (365 * 1440))
         stressed_iv = max(.001, iv - cfg["iv_drop"])
-        target_mid = option_value(float(signal["target"]), strike, target_years, cfg["risk_free_rate"], stressed_iv, contract["side"])[0]
+        # A setup whose "target" is only a far cap supplies a nearer scenario level,
+        # so the cost test is made against a move it can realistically deliver.
+        scenario = float(signal.get("scenario_target", signal["target"]))
+        target_mid = option_value(scenario, strike, target_years, cfg["risk_free_rate"], stressed_iv, contract["side"])[0]
         stop_mid = option_value(float(signal["stop"]), strike, target_years, cfg["risk_free_rate"], stressed_iv, contract["side"])[0]
         slippage = ask * cfg["slippage_pct"] / 100
-        costs = (ask - bid + 2 * slippage) * lot + cfg["charges_roundtrip_per_lot_inr"]
+        costs = (ask - bid + 2 * slippage) * lot + estimated_charges(ask, lot, lot, config)
         favorable = (target_mid - (bid + ask) / 2) * lot
-        if favorable <= 0 or costs > favorable * cfg["cost_move_max_fraction"]:
+        # The same cost expressed as the underlying move needed to pay for it.
+        cost_bps = 1e4 * costs / (lot * abs(delta) * spot) if abs(delta) > 0 else math.inf
+        result["cost_underlying_bps"] = cost_bps
+        allowance = signal.get("max_cost_bps")
+        if allowance is not None:
+            # A setup with a measured average move is judged against that move
+            # directly instead of a modelled premium scenario.
+            if cost_bps > float(allowance):
+                reasons.append("Round-trip cost exceeds this setup's cost allowance")
+        elif favorable <= 0 or costs > favorable * cfg["cost_move_max_fraction"]:
             reasons.append("Estimated costs exceed allowed scenario reward")
         stop_bid = max(0, stop_mid - (ask - bid) / 2 - slippage)
         loss = max(ask - stop_bid, ask * risk["premium_stop_pct"] / 100) * lot + costs
@@ -172,7 +205,10 @@ def select_contract(contracts: list[dict], quotes: dict, signal: dict,
     valid = [c for c in checked if c["eligible"]]
     if valid:
         # Compare executable economics across suitable expiries, not nominal premium.
-        valid.sort(key=lambda c: (c["estimated_cost_per_lot"] / max(c["target_scenario_per_lot"], .01), c["expiry"], c["symbol"]))
+        if signal.get("max_cost_bps") is not None:
+            valid.sort(key=lambda c: (c["cost_underlying_bps"], c["expiry"], c["symbol"]))
+        else:
+            valid.sort(key=lambda c: (c["estimated_cost_per_lot"] / max(c["target_scenario_per_lot"], .01), c["expiry"], c["symbol"]))
         return valid[0], []
     reasons = list(dict.fromkeys(reason for c in checked for reason in c["reasons"]))
     return (checked[0] if checked else None), reasons or ["No matching active option contracts"]

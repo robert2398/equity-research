@@ -219,15 +219,29 @@ def dispatch(args):
         monitor_thread = threading.Thread(target=watch_risk, name="fno-risk-monitor", daemon=True)
         monitor_thread.start()
         print("F&O assistant running. Open http://localhost:8123/#fno. Ctrl+C stops monitoring.", flush=True)
-        previous_minute = None
+        previous_minute, last_opening, last_full = None, None, None
         try:
             while not stop.is_set():
                 now = local_time()
                 minute = now.floor("min")
-                if now.second >= config["data"]["finalization_seconds"] and minute != previous_minute:
+                pending = service.opening_scan_pending(now)
+                if pending and (last_opening is None or (now - last_opening).total_seconds() >= 2):
+                    # The opening drive is decided once, seconds after the first candle.
+                    # Its light pass repeats every couple of seconds until nearly every
+                    # stock's first candle has arrived.
+                    state = service.scan_opening(now)
+                    detail = f" ({state['note']})" if state.get("note") else ""
+                    print(f"{now.strftime('%H:%M:%S')} IST | opening drive: {state['armed']} armed{detail}", flush=True)
+                    last_opening = local_time()
+                    pending = service.opening_scan_pending(last_opening)
+                # The slower full scan waits for that ranking, but never so long that
+                # its own snapshot would be reported stale.
+                overdue = last_full is not None and (now - last_full).total_seconds() >= 75
+                if (now.second >= config["data"]["finalization_seconds"] and minute != previous_minute
+                        and (not pending or overdue)):
                     snapshot = service.scan(now)
                     print(f"{now.strftime('%H:%M:%S')} IST | CE {len(snapshot['ce'])} PE {len(snapshot['pe'])} | {len(snapshot.get('watchlist', []))} stocks", flush=True)
-                    previous_minute = minute
+                    previous_minute, last_full = minute, local_time()
                 stop.wait(1)
         except KeyboardInterrupt:
             stop.set()

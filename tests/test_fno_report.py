@@ -249,8 +249,10 @@ def test_full_day_sample_stop_keeps_planned_and_completed_coverage_distinct(tmp_
 
 def test_read_only_verifier_checks_actual_endpoints_stop_direction_and_detects_corruption():
     import pandas as pd
-    from scanner.fno.config import DEFAULTS
+    from fno_legacy import legacy_config
     from scanner.fno.replay import simulate_signal
+
+    DEFAULTS = legacy_config()
 
     candles = pd.DataFrame({"timestamp": pd.date_range("2026-10-01 09:55", periods=39, freq="5min", tz="Asia/Kolkata"),
                             "open": 101.0, "high": 101.2, "low": 100.5, "close": 101.0, "volume": 1000})

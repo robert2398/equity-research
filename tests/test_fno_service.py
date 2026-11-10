@@ -16,8 +16,9 @@ NOW = pd.Timestamp("2026-11-04 11:00:04", tz="Asia/Kolkata")
 @pytest.fixture
 def ready(tmp_path):
     config = deepcopy(DEFAULTS)
-    config["contracts"].update(charges_roundtrip_per_lot_inr=0, slippage_pct=0, iv_drop=0)
+    config["contracts"].update(charges_roundtrip_per_lot_inr=0, charges_pct_of_premium=0, slippage_pct=0, iv_drop=0)
     config["eligibility"]["min_score"] = 0
+    config["exit"] = {}  # earlier exit rules; the fast-exit tests below set their own policy
     store = FnoStore(tmp_path / "fno.sqlite3")
     contract = {"symbol": "NFO:XYZ26NOV1000CE", "token": 1234, "side": "CE",
                 "strike": 1000, "expiry": "2026-11-24", "lot_size": 25, "tick_size": .05}
@@ -256,3 +257,126 @@ def test_malformed_quotes_cannot_prevent_mandatory_time_exit(ready):
     trade = store.trades()[0]
     assert trade["status"] == "EXIT_DUE" and trade["exit_reason"] == "MAX_HOLD"
     assert trade["monitoring_impaired"] is True
+
+
+FAST = {"default": {"time_stop_minutes": 30, "progress_minutes": 10, "min_progress_r": .5,
+                    "trail_activate_r": 1., "trail_distance_r": 1.}}
+
+
+def _open_with_fast_exits(ready):
+    service, store, signal, contract, mid = ready
+    service.config["exit"] = deepcopy(FAST)
+    service.monitor(NOW)
+    trade = service.open_trade({"signal_id": signal["id"], "contract_symbol": contract["symbol"],
+                                "quantity": 25, "entry_premium": mid, "entry_underlying": 1000}, NOW)
+    assert trade["exit_policy"] == FAST["default"] and trade["underlying_risk"] == 5
+
+    def tick(minutes, price):
+        when = NOW + pd.Timedelta(minutes=minutes)
+        store.upsert_quotes([{"symbol": "XYZ", "timestamp": when.isoformat(), "ltp": price},
+                             {"symbol": contract["symbol"], "timestamp": when.isoformat(), "ltp": mid,
+                              "last_trade_time": when.isoformat(), "bid": mid, "ask": mid + .02,
+                              "volume": 10000, "depth_bid": 10000, "depth_ask": 10000}])
+        service.monitor(when)
+        return store.trades()[0]
+
+    return tick
+
+
+def test_ratchet_follows_the_best_live_price_and_never_loosens(ready):
+    tick = _open_with_fast_exits(ready)
+    assert tick(1, 1004)["current_stop"] == 995          # under 1R: the initial stop stands
+    assert tick(2, 1008)["current_stop"] == 1003         # 8 ahead keeps the stop 5 behind
+    held = tick(3, 1006)
+    assert held["current_stop"] == 1003 and held["status"] == "OPEN"
+    assert tick(4, 1011)["current_stop"] == 1006
+    done = tick(5, 1005.9)
+    assert done["status"] == "EXIT_DUE" and done["exit_reason"] == "TRAILING_STOP"
+    assert done["current_stop"] == 1006 and done["initial_stop"] == 995
+
+
+def test_fast_exit_progress_deadline_closes_a_stalled_trade(ready):
+    tick = _open_with_fast_exits(ready)
+    assert tick(9, 1001)["status"] == "OPEN"
+    stalled = tick(10, 1001)                              # best move 1 is under half an R
+    assert stalled["status"] == "EXIT_DUE" and stalled["exit_reason"] == "NO_FOLLOW_THROUGH"
+
+
+def test_fast_exit_time_stop_applies_to_a_trade_that_is_working(ready):
+    tick = _open_with_fast_exits(ready)
+    assert tick(5, 1004)["status"] == "OPEN"
+    assert tick(29, 1004)["status"] == "OPEN"
+    timed = tick(30, 1004)
+    assert timed["status"] == "EXIT_DUE" and timed["exit_reason"] == "TIME_STOP"
+
+
+def test_initial_stop_keeps_its_own_reason_before_any_ratchet(ready):
+    tick = _open_with_fast_exits(ready)
+    stopped = tick(1, 994.9)
+    assert stopped["exit_reason"] == "STRUCTURAL_STOP" and not stopped.get("ratchet_active")
+
+
+EARLY = pd.Timestamp("2026-11-05 09:20:10", tz="Asia/Kolkata")  # next session: stored quotes never move backwards
+
+
+def _opening_session(ready, price=1000):
+    """Move the fixture to the next session's opening window with fresh references and quotes."""
+    from scanner.fno.opening import opening_drive_signals
+    service, store, pullback, contract, mid = ready
+    first = EARLY.normalize() + pd.Timedelta(hours=9, minutes=15)
+    reference = {**store.universe()["reference"], "as_of": "2026-11-05", "ban_as_of": "2026-11-05"}
+    store.save_universe(store.universe()["stocks"], "2026-11-05", reference)
+    store.set_state("feed_health", {"status": "LIVE", "last_tick_at": EARLY.isoformat()})
+    store.set_state("scan_snapshot", {"as_of": EARLY.isoformat(), "watchlist": [], "summary": {}})
+    store.upsert_bars("XYZ", "5minute", pd.DataFrame([{"timestamp": first, "open": 996, "high": 1000.5,
+                                                       "low": 995.5, "close": 1000, "volume": 6000}]))
+    store.upsert_quotes([{"symbol": "XYZ", "timestamp": EARLY.isoformat(), "ltp": price},
+                         {"symbol": "NIFTY 50", "timestamp": EARLY.isoformat(), "ltp": 25000},
+                         {"symbol": contract["symbol"], "timestamp": EARLY.isoformat(), "ltp": mid,
+                          "last_trade_time": EARLY.isoformat(), "bid": mid - .01, "ask": mid + .01,
+                          "volume": 10000, "oi": 10000, "depth_bid": 10000, "depth_ask": 10000}])
+    stat = {"symbol": "XYZ", "sector": "TEST", "timestamp": first, "tick": .05, "open": 996., "high": 1000.5,
+            "low": 995.5, "close": 1000., "rvol": 6., "daily_atr": 20., "body_datr": .2, "close_location": .9}
+    drive = opening_drive_signals([stat], 1, EARLY, service.config)[0][0]
+    pullback.update(signal_time=(EARLY - pd.Timedelta(minutes=5, seconds=1)).isoformat(),
+                    confirmed_at=(EARLY - pd.Timedelta(seconds=1)).isoformat(),
+                    expires_at=(EARLY + pd.Timedelta(minutes=10)).isoformat())
+    return drive, pullback
+
+
+def test_opening_drive_triggers_before_the_trend_window_and_without_hourly_bias(ready):
+    service, store, _, contract, mid = ready
+    service.config["exit"] = deepcopy(DEFAULTS["exit"])
+    drive, pullback = _opening_session(ready)
+    store.put_signal(drive)
+    store.put_signal(pullback)
+    store.set_state("biases", {"XYZ": {"bias": "PE", "metrics": {}}})   # opposes both signals
+    service.monitor(EARLY)
+    states = {s["setup"]: s for s in store.signals()}
+    assert states["OPENING_DRIVE"]["status"] == "TRIGGERED", states["OPENING_DRIVE"].get("eligibility")
+    assert states["OPENING_DRIVE"]["contract"]["cost_underlying_bps"] < 8
+    # The trend setup still needs its hourly permission.
+    assert states["PULLBACK"]["status"] == "INVALIDATED"
+    trade = service.open_trade({"signal_id": drive["id"], "contract_symbol": contract["symbol"],
+                                "quantity": 25, "entry_premium": mid + .01, "entry_underlying": 1000}, EARLY)
+    assert trade["setup"] == "OPENING_DRIVE" and trade["underlying_risk"] == pytest.approx(3)
+    assert trade["exit_policy"]["progress_minutes"] == 0 and trade["exit_policy"]["time_stop_minutes"] == 30
+
+
+def test_trend_signal_is_not_actionable_in_the_opening_window(ready):
+    service, store, _, _, _ = ready
+    _, pullback = _opening_session(ready)
+    store.put_signal(pullback)
+    service.monitor(EARLY)
+    state = store.signals()[0]
+    assert state["status"] == "WATCH"
+    assert "Outside configured entry session" in state["eligibility"]["reasons"]
+
+
+def test_opening_drive_expires_when_price_has_already_run(ready):
+    service, store, _, _, _ = ready
+    drive, _ = _opening_session(ready, price=1001.2)  # past entry + 1.6
+    store.put_signal(drive)
+    service.monitor(EARLY)
+    state = next(s for s in store.signals() if s["id"] == drive["id"])
+    assert state["status"] == "EXPIRED" and state["terminal_reason"] == "Price exceeded chase limit"

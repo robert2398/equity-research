@@ -16,7 +16,7 @@ NOW = pd.Timestamp("2026-11-05 11:00:04", tz="Asia/Kolkata")
 def paper(tmp_path):
     config = deepcopy(DEFAULTS)
     config["risk"]["reference_capital"] = 100_000
-    config["contracts"]["charges_roundtrip_per_lot_inr"] = 10
+    config["contracts"].update(charges_roundtrip_per_lot_inr=10, charges_pct_of_premium=0)
     contracts = {}
     stocks = []
     for index, (symbol, sector) in enumerate((("XYZ", "TECH"), ("ABC", "OTHER"), ("DEF", "TECH"))):

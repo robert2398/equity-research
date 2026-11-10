@@ -11,8 +11,9 @@ import uuid
 
 import pandas as pd
 
-from .config import database_path, load_config
-from .contracts import local_time, quote_age, select_contract, evaluate_contract
+from .config import database_path, exit_policy, load_config
+from .contracts import (chase_limit, estimated_charges, evaluate_contract, local_time, quote_age,
+                        select_contract)
 from .store import FnoStore
 
 _THREAD_LOCK = threading.RLock()
@@ -43,6 +44,30 @@ class FnoService:
         self.config = config if config is not None else load_config()
         self.store = store if store is not None else FnoStore(database_path(self.config))
         self.lock_path = Path(self.store.path).with_suffix(".service.lock")
+        self._memo = threading.local()
+
+    @contextmanager
+    def _one_universe_read(self):
+        """Load the large universe record once per operation instead of once per signal.
+
+        Eligibility is rechecked for every active signal about once a second, so
+        repeated loads would otherwise delay entry and exit alerts.
+        """
+        nested = getattr(self._memo, "active", False)
+        if not nested:
+            self._memo.active, self._memo.universe = True, None
+        try:
+            yield
+        finally:
+            if not nested:
+                self._memo.active, self._memo.universe = False, None
+
+    def _universe(self) -> dict:
+        if getattr(self._memo, "active", False):
+            if self._memo.universe is None:
+                self._memo.universe = self.store.universe()
+            return self._memo.universe
+        return self.store.universe()
 
     @contextmanager
     def _locked(self):
@@ -74,20 +99,28 @@ class FnoService:
                         fcntl.flock(lock_file, fcntl.LOCK_UN)
 
     def _references(self, now) -> dict:
-        reference = dict(self.store.universe().get("reference") or {})
+        reference = dict(self._universe().get("reference") or {})
         manual = self.store.get_state("references", {}) or {}
         if manual.get("as_of") == local_time(now).date().isoformat():
             reference.update(manual)
         return reference
 
-    def _entry_reasons(self, symbol: str, now, quotes=None) -> list[str]:
+    def _entry_start(self, signal: dict | None) -> str:
+        """The opening drive may be entered before the trend setups' window opens."""
+        if signal and signal.get("setup") == "OPENING_DRIVE":
+            return self.config["opening_drive"]["entry_start"]
+        return self.config["session"]["entry_start"]
+
+    def _entry_reasons(self, symbol: str, now, quotes=None, entry_start=None,
+                       snapshot_required=True) -> list[str]:
         now = local_time(now)
         cfg = self.config
         reasons = []
         clock = now.strftime("%H:%M")
-        if now.dayofweek >= 5 or not cfg["session"]["entry_start"] <= clock <= cfg["session"]["last_entry"]:
+        start = entry_start or cfg["session"]["entry_start"]
+        if now.dayofweek >= 5 or not start <= clock <= cfg["session"]["last_entry"]:
             reasons.append("Outside configured entry session")
-        universe = self.store.universe()
+        universe = self._universe()
         today = now.date().isoformat()
         if universe.get("as_of") != today:
             reasons.append("Universe reference is not current")
@@ -111,7 +144,7 @@ class FnoService:
                 reasons.append("Scheduled stock event")
         health = self.store.get_state("feed_health", {}) or {}
         snapshot = self.store.get_state("scan_snapshot", {}) or {}
-        if quote_age({"timestamp": snapshot.get("as_of")}, now) > 90:
+        if snapshot_required and quote_age({"timestamp": snapshot.get("as_of")}, now) > 90:
             reasons.append("Scanner snapshot is stale")
         if health.get("status") != "LIVE" or quote_age({"timestamp": health.get("last_tick_at", health.get("updated_at"))}, now) > cfg["eligibility"]["feed_age_seconds"]:
             reasons.append("Live feed is not healthy")
@@ -193,7 +226,8 @@ class FnoService:
             reasons = contract["reasons"][:] if contract else ["Triggered contract is no longer active"]
         else:
             contract, reasons = select_contract(stock.get("contracts", []), quotes, signal, spot, now, self.config)
-        reasons += self._entry_reasons(signal["symbol"], now, quotes)
+        reasons += self._entry_reasons(signal["symbol"], now, quotes, self._entry_start(signal),
+                                       signal.get("setup") != "OPENING_DRIVE")
         reasons += self._portfolio_reasons(signal, contract, now)
         score = float(signal.get("score", 0)) + (float(contract.get("contract_score", 0)) if contract and contract.get("eligible") else 0)
         if score < self.config["eligibility"]["min_score"]:
@@ -226,8 +260,129 @@ class FnoService:
             warnings.append(f"{len(failures)} stocks could not be analyzed; inspect the watchlist reasons.")
         return {"status": "READY" if not warnings else "WAITING", "as_of": snapshot.get("as_of"),
                 "now": now.isoformat(), "feed": health, "universe_count": len(universe.get("stocks", [])),
-                "reference": self._references(now), "config": {"session": self.config["session"], "risk": self.config["risk"]},
+                "reference": self._references(now),
+                "config": {"session": self.config["session"], "risk": self.config["risk"],
+                           "setups": self.config["setup"]["enabled"],
+                           "opening_drive": self.config["opening_drive"], "exit": self.config["exit"]},
+                "opening_drive": self._opening_summary(now),
                 "warnings": warnings, "version": self.config["version"], "monitor": monitor}
+
+    def opening_scan_pending(self, now=None) -> bool:
+        """True while the opening-drive ranking is still owed inside its entry window.
+
+        The ranking needs nearly every stock's first candle. Those arrive over a
+        few seconds after 09:20, so the worker rescans quickly until the
+        cross-section is complete rather than waiting for the next minute.
+        """
+        from .opening import window
+        now = local_time(now)
+        if (not self.config["opening_drive"]["enabled"] or now.dayofweek >= 5
+                or "OPENING_DRIVE" not in self.config["setup"]["enabled"]):
+            return False
+        first, confirmed, expires = window(now, self.config)
+        if not confirmed <= now <= expires:
+            return False
+        state = self.store.get_state("opening_scan", {}) or {}
+        ranked = (state.get("session") == first.date().isoformat() and state.get("window_open")
+                  and not str(state.get("note") or "").startswith("Opening cross-section incomplete"))
+        return not ranked
+
+    def _opening_summary(self, now) -> dict:
+        from .opening import window
+        first, confirmed, expires = window(now, self.config)
+        state = self.store.get_state("opening_scan", {}) or {}
+        current = state.get("session") == first.date().isoformat()
+        return {"window_open": bool(self.config["opening_drive"]["enabled"] and now.dayofweek < 5
+                                    and confirmed <= now <= expires),
+                "armed": int(state.get("armed", 0)) if current else 0,
+                "note": state.get("note") if current else None}
+
+    def _register(self, signal, stock, quotes, existing, now, subscriptions) -> None:
+        """Persist a detected signal without disturbing a lifecycle it already has."""
+        from .contracts import shortlist_contracts
+        symbol = stock["symbol"]
+        signal.setdefault("sector", stock.get("sector", "UNMAPPED"))
+        if signal["id"] in existing:
+            signal = existing[signal["id"]]
+            if signal["status"] in ("INVALIDATED", "EXPIRED", "OPEN", "EXITED"):
+                return
+        else:
+            signal["status"] = "ARMED"
+            signal["created_at"] = now.isoformat()
+            signal["version"] = self.config["version"]
+        try:
+            spot = _finite((quotes.get(symbol) or {}).get("ltp"), "Underlying price")
+        except ValueError:
+            spot = float(signal["entry"])
+        options = shortlist_contracts(stock.get("contracts", []), signal["side"], spot, now, self.config)
+        signal["shortlist_tokens"] = [int(c["token"]) for c in options]
+        subscriptions.update(signal["shortlist_tokens"])
+        signal["eligibility"] = self._eligibility(signal, stock, quotes, now)
+        self.store.put_signal(signal)
+
+    def scan_opening(self, now=None) -> dict:
+        """Rank the opening cross-section and arm its leaders.
+
+        A light pass: it reads each stock's opening candles and daily history
+        only, so it finishes in about a second while the full scan takes much
+        longer. The measured edge fades within minutes of 09:20.
+        """
+        from .features import closed_bars, slot_rvol
+        from .opening import opening_drive_signals, opening_stats, window
+        now = local_time(now)
+        first, confirmed, expires = window(now, self.config)
+        state = {"as_of": now.isoformat(), "session": first.date().isoformat(),
+                 "window_open": False, "armed": 0, "note": None, "errors": []}
+        if (not self.config["opening_drive"]["enabled"] or now.dayofweek >= 5
+                or "OPENING_DRIVE" not in self.config["setup"]["enabled"]
+                or not confirmed <= now <= expires):
+            return state
+        state["window_open"] = True
+        with self._one_universe_read():
+            return self._scan_opening(now, state)
+
+    def _scan_opening(self, now, state) -> dict:
+        from .opening import opening_drive_signals, opening_stats
+        stocks = self._universe().get("stocks", [])
+        setup, opened = self.config["setup"], self.config["session"]["open"]
+        sessions = int(setup["rvol_sessions"]) + 6
+        since = now.normalize() - pd.Timedelta(days=2 * sessions + 10)
+        final = now - pd.Timedelta(minutes=5, seconds=float(self.config["data"]["finalization_seconds"]))
+        rows = []
+        for stock in stocks:
+            symbol = stock["symbol"]
+            try:
+                # Stored candles are already validated, sorted and time-zone aware, so the
+                # completed ones are selected directly; this pass has to stay quick.
+                slot = self.store.read_slot_bars(symbol, "5minute", opened, sessions, since)
+                slot = slot.loc[slot["timestamp"] <= final].reset_index(drop=True)
+                # Every row is the same clock slot: this is the slot relative volume.
+                baseline = slot["volume"].shift().rolling(
+                    int(setup["rvol_sessions"]), min_periods=int(setup["min_rvol_sessions"])).median()
+                slot["rvol"] = slot["volume"] / baseline.where(baseline > 0)
+                daily = self.store.read_bars(symbol, "day", limit=350)
+                daily = daily.loc[daily["timestamp"] < now.normalize()].reset_index(drop=True)
+                rows.append(opening_stats(symbol, daily, slot, now, self.config,
+                                          stock.get("sector", "UNMAPPED"), float(stock.get("tick_size", .05))))
+            except Exception as error:
+                state["errors"].append({"symbol": symbol, "error": f"{type(error).__name__}: {error}"})
+        signals, note = opening_drive_signals(rows, len(stocks), now, self.config)
+        by_symbol = {stock["symbol"]: stock for stock in stocks}
+        with self._locked():
+            quotes = self.store.quotes()
+            existing = {s["id"]: s for s in self.store.signals()}
+            subscriptions = {int(item["token"] if isinstance(item, dict) else item)
+                             for item in self.store.get_state("option_subscriptions", []) or []}
+            for signal in signals:
+                try:
+                    self._register(signal, by_symbol[signal["symbol"]], quotes, existing, now, subscriptions)
+                except Exception as error:
+                    state["errors"].append({"symbol": signal["symbol"], "error": f"{type(error).__name__}: {error}"})
+            self.store.set_state("option_subscriptions", sorted(subscriptions))
+            state.update(armed=len(signals), note=note)
+            self.store.set_state("opening_scan", state)
+            self._advance(now, quotes, by_symbol)
+        return state
 
     def candidates(self, now=None) -> dict:
         now = local_time(now)
@@ -242,8 +397,9 @@ class FnoService:
         for signal in signals:
             if signal.get("status") not in ("ARMED", "TRIGGERED", "WATCH"):
                 continue
-            reasons = self._entry_reasons(signal["symbol"], now, quotes)
-            if stale:
+            trend = signal.get("setup") != "OPENING_DRIVE"
+            reasons = self._entry_reasons(signal["symbol"], now, quotes, self._entry_start(signal), trend)
+            if stale and trend:
                 reasons.append("Scanner snapshot is stale")
             if now > local_time(signal["expires_at"]):
                 reasons.append("Entry window expired")
@@ -280,6 +436,8 @@ class FnoService:
                     sector_frames[item["sector"]] = frame
         cache = self.store.get_state("analysis_cache", {}) or {}
         computed, errors = [], []
+        # One-shot scans inside the opening window also rank the opening drive.
+        self.scan_opening(now)
         config_key = json.dumps(self.config, sort_keys=True, default=str)
 
         def fingerprint(frame):
@@ -312,7 +470,7 @@ class FnoService:
                 computed.append((stock, analysis))
             except Exception as error:
                 errors.append({"symbol": symbol, "error": f"{type(error).__name__}: {error}"})
-        with self._locked():
+        with self._locked(), self._one_universe_read():
             committed = self.store.get_state("scan_snapshot", {}) or {}
             if committed.get("as_of") and local_time(committed["as_of"]) > now:
                 return self.candidates(local_time(committed["as_of"]))
@@ -329,28 +487,13 @@ class FnoService:
                     signal = analysis.pop("signal", None)
                     watch.append(analysis)
                     if signal:
-                        signal.setdefault("sector", stock.get("sector", "UNMAPPED"))
-                        if signal["id"] in existing:
-                            signal = existing[signal["id"]]
-                            if signal["status"] in ("INVALIDATED", "EXPIRED", "OPEN", "EXITED"):
-                                continue
-                        else:
-                            signal["status"] = "ARMED"
-                            signal["created_at"] = now.isoformat()
-                            signal["version"] = self.config["version"]
-                        try:
-                            spot = _finite((quotes.get(symbol) or {}).get("ltp"), "Underlying price")
-                        except ValueError:
-                            spot = float(signal["entry"])
-                        from .contracts import shortlist_contracts
-                        options = shortlist_contracts(stock.get("contracts", []), signal["side"], spot, now, self.config)
-                        subscriptions.update(int(c["token"]) for c in options)
-                        signal["eligibility"] = self._eligibility(signal, stock, quotes, now)
-                        self.store.put_signal(signal)
+                        self._register(signal, stock, quotes, existing, now, subscriptions)
                 except Exception as error:
                     errors.append({"symbol": symbol, "error": f"{type(error).__name__}: {error}"})
-            # Keep active contract subscriptions after the setup candle is no longer latest.
+            # Keep an active signal's contracts subscribed after its candle is no longer latest,
+            # so the cheapest eligible contract can still be chosen while it may trigger.
             for signal in self.store.signals(statuses=["ARMED", "WATCH", "TRIGGERED"]):
+                subscriptions.update(int(token) for token in signal.get("shortlist_tokens", []))
                 if signal.get("contract", {}).get("token"):
                     subscriptions.add(int(signal["contract"]["token"]))
             for trade in self.store.trades(statuses=["OPEN", "EXIT_DUE"]):
@@ -360,7 +503,8 @@ class FnoService:
             self.store.set_state("analysis_cache", {s["symbol"]: cache[s["symbol"]] for s, _ in computed})
             snapshot = {"as_of": now.isoformat(), "watchlist": watch, "summary": {
                 "universe": len(stocks), "ce_bias": sum(b["bias"] == "CE" for b in biases.values()),
-                "pe_bias": sum(b["bias"] == "PE" for b in biases.values()), "errors": errors}, "warnings": []}
+                "pe_bias": sum(b["bias"] == "PE" for b in biases.values()), "errors": errors,
+                "opening_drive": self._opening_summary(now)}, "warnings": []}
             self.store.set_state("scan_snapshot", snapshot)
             self._advance(now, quotes, {s["symbol"]: s for s in stocks})
         return self.candidates(now)
@@ -373,7 +517,8 @@ class FnoService:
                 signal.update(status="EXPIRED", terminal_reason="Entry window expired")
             elif now < local_time(signal.get("confirmed_at", signal["signal_time"])):
                 continue
-            elif biases.get(symbol, {}).get("bias", signal["side"]) != signal["side"]:
+            elif (signal.get("requires_bias", True)
+                  and biases.get(symbol, {}).get("bias", signal["side"]) != signal["side"]):
                 signal.update(status="INVALIDATED", terminal_reason="Higher timeframe permission lost")
             else:
                 quote = quotes.get(symbol, {})
@@ -388,7 +533,7 @@ class FnoService:
                     signal.update(status="INVALIDATED", terminal_reason="Hourly structure failed on live price")
                 elif fresh and direction * (price - signal["stop"]) <= 0:
                     signal.update(status="INVALIDATED", terminal_reason="Structural stop failed before entry")
-                elif fresh and direction * (price - signal["entry"]) > signal["atr"] * self.config["setup"]["chase_atr"]:
+                elif fresh and direction * (price - signal["entry"]) > chase_limit(signal, self.config):
                     signal.update(status="EXPIRED", terminal_reason="Price exceeded chase limit")
                 else:
                     stock = stocks.get(symbol, {"contracts": []})
@@ -411,8 +556,8 @@ class FnoService:
 
     def monitor(self, now=None):
         now = local_time(now)
-        with self._locked():
-            stocks = {s["symbol"]: s for s in self.store.universe().get("stocks", [])}
+        with self._locked(), self._one_universe_read():
+            stocks = {s["symbol"]: s for s in self._universe().get("stocks", [])}
             self._advance(now, self.store.quotes(), stocks)
 
     def _monitor_trade(self, trade, quotes, now):
@@ -432,8 +577,13 @@ class FnoService:
         age = (now - local_time(trade["opened_at"])).total_seconds() / 60
         direction = 1 if trade["side"] == "CE" else -1
         reason = None
+        # Trades recorded before exit policies existed keep the earlier rules.
+        policy = trade.get("exit_policy") or exit_policy(None, {"risk": risk})
+        time_stop = policy.get("time_stop_minutes")
         if now.strftime("%H:%M") >= self.config["session"]["flat_at"] or now.date() > local_time(trade["opened_at"]).date():
             reason = "SESSION_CUTOFF"
+        elif time_stop is not None and age >= time_stop:
+            reason = "TIME_STOP"
         elif age >= risk["max_hold_minutes"]:
             reason = "MAX_HOLD"
         if price_fresh:
@@ -441,11 +591,21 @@ class FnoService:
             favorable = direction * (price - trade["entry_underlying"])
             trade["mfe"] = max(float(trade.get("mfe", 0)), favorable)
             trade["mae"] = min(float(trade.get("mae", 0)), favorable)
+            unit = float(trade["underlying_risk"])
+            activate, distance = policy.get("trail_activate_r"), policy.get("trail_distance_r")
+            if activate is not None and distance is not None and trade["mfe"] >= activate * unit:
+                # Lock in progress from live prices: the stop follows the best price
+                # seen at a fixed distance and can only tighten.
+                ratchet = trade["entry_underlying"] + direction * (trade["mfe"] - distance * unit)
+                if direction * (ratchet - trade["current_stop"]) > 0:
+                    trade["current_stop"] = ratchet
+                    trade["ratchet_active"] = True
             if direction * (price - trade["current_stop"]) <= 0:
-                reason = reason or "STRUCTURAL_STOP"
+                reason = reason or ("TRAILING_STOP" if trade.get("ratchet_active") else "STRUCTURAL_STOP")
             elif direction * (price - trade["target"]) >= 0:
                 reason = reason or "TARGET"
-            elif age >= risk["progress_minutes"] and trade["mfe"] < risk["min_progress_r"] * trade["underlying_risk"]:
+            elif (policy["progress_minutes"] > 0 and age >= policy["progress_minutes"]
+                  and trade["mfe"] < policy["min_progress_r"] * unit):
                 reason = reason or "NO_FOLLOW_THROUGH"
             if trade["mfe"] >= trade["underlying_risk"]:
                 trade["trailing_activated"] = True
@@ -509,9 +669,10 @@ class FnoService:
             underlying = _finite(body.get("entry_underlying"), "underlying entry")
             direction = 1 if signal["side"] == "CE" else -1
             live_price = _finite(quotes[signal["symbol"]].get("ltp"), "live price")
-            if direction * (live_price - signal["entry"]) < 0 or direction * (live_price - signal["entry"]) > signal["atr"] * self.config["setup"]["chase_atr"]:
+            chase = chase_limit(signal, self.config)
+            if direction * (live_price - signal["entry"]) < 0 or direction * (live_price - signal["entry"]) > chase:
                 raise ValueError("Live entry trigger is lost or extended")
-            if direction * (underlying - signal["stop"]) <= 0 or abs(underlying - signal["entry"]) > signal["atr"] * self.config["setup"]["chase_atr"]:
+            if direction * (underlying - signal["stop"]) <= 0 or abs(underlying - signal["entry"]) > chase:
                 raise ValueError("Recorded fill is outside the allowed chart entry zone")
             actual_rr = direction * (signal["target"] - underlying) / (direction * (underlying - signal["stop"]))
             if actual_rr < self.config["setup"]["min_rr"]:
@@ -535,7 +696,9 @@ class FnoService:
                      "contract": contract, "initial_stop": signal["stop"], "current_stop": signal["stop"],
                      "target": signal["target"], "atr": signal["atr"], "underlying_risk": abs(underlying - signal["stop"]),
                      "premium_stop": premium * (1 - self.config["risk"]["premium_stop_pct"] / 100),
-                     "planned_risk": adjusted["loss_per_lot"] * lots, "estimated_charges": lots * self.config["contracts"]["charges_roundtrip_per_lot_inr"],
+                     "planned_risk": adjusted["loss_per_lot"] * lots,
+                     "estimated_charges": estimated_charges(premium, quantity, contract["lot_size"], self.config),
+                     "exit_policy": exit_policy(signal["setup"], self.config),
                      "mfe": 0, "mae": 0, "version": self.config["version"]}
             trade["entry_source"] = "STRATEGY_SIGNAL"
             self.store.put_trade(trade)
@@ -619,7 +782,7 @@ class FnoService:
             if sign * (underlying - stop) <= 0 or sign * (target - underlying) <= 0:
                 raise ValueError("CE needs stop < entry < target; PE needs target < entry < stop")
             lots = quantity // lot_size
-            cost = float(self.config["contracts"]["charges_roundtrip_per_lot_inr"])
+            cost = estimated_charges(premium, lot_size, lot_size, self.config)
             risk_percent = float(self.config["risk"]["premium_stop_pct"])
             plan_contract = {**contract, "ask": premium,
                              "loss_per_lot": premium * lot_size * risk_percent / 100 + cost}

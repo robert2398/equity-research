@@ -16,7 +16,7 @@ NOW = pd.Timestamp("2026-11-04 11:00:00", tz="Asia/Kolkata")
 
 def scenario(side="CE"):
     config = deepcopy(DEFAULTS)
-    config["contracts"].update(charges_roundtrip_per_lot_inr=0, slippage_pct=0, iv_drop=0)
+    config["contracts"].update(charges_roundtrip_per_lot_inr=0, charges_pct_of_premium=0, slippage_pct=0, iv_drop=0)
     strike = 1000 if side == "CE" else 1020
     contract = {"symbol": f"NFO:XYZ26NOV{strike}{side}", "tradingsymbol": f"XYZ26NOV{strike}{side}",
                 "token": 100, "side": side, "strike": strike, "expiry": "2026-11-24",
@@ -186,3 +186,43 @@ def test_quote_age_does_not_assume_missing_timestamp_is_fresh():
     assert quote_age({}, NOW) == math.inf
     assert quote_age({"timestamp": None}, pd.Timestamp.now(tz=NOW.tz)) == math.inf
     assert quote_age({"timestamp": NOW.isoformat()}, NOW) == 0
+
+
+def test_charges_have_a_fixed_part_per_lot_and_a_share_of_premium():
+    from scanner.fno.contracts import estimated_charges
+    config = deepcopy(DEFAULTS)
+    config["contracts"].update(charges_roundtrip_per_lot_inr=50, charges_pct_of_premium=.25)
+    assert estimated_charges(20, 50, 25, config) == pytest.approx(2 * 50 + 20 * 50 * .0025)
+    config["contracts"]["charges_pct_of_premium"] = 0
+    assert estimated_charges(20, 50, 25, config) == 100
+
+
+def test_cost_allowance_is_judged_in_underlying_terms_for_measured_setups():
+    config, contract, quote, signal = scenario()
+    # A far cap as "target" would wave any cost through the scenario test.
+    signal.update(target=1100, scenario_target=1006, max_cost_bps=8)
+    tight = evaluate_contract(contract, quote, signal, 1000, NOW, config)
+    assert tight["eligible"], tight["reasons"]
+    assert tight["cost_underlying_bps"] == pytest.approx(1e4 * .10 / (abs(tight["delta"]) * 1000))
+    wide = {**quote, "bid": quote["bid"] - .25, "ask": quote["ask"] + .25}
+    config["contracts"]["max_spread_pct"] = 5
+    rejected = evaluate_contract(contract, wide, signal, 1000, NOW, config)
+    assert rejected["cost_underlying_bps"] > 8
+    assert any("cost allowance" in reason for reason in rejected["reasons"])
+    # Without an allowance the earlier scenario test still applies.
+    signal.pop("max_cost_bps")
+    signal.update(target=1000.01, scenario_target=1000.01)
+    assert any("scenario reward" in reason for reason in evaluate_contract(contract, quote, signal, 1000, NOW, config)["reasons"])
+
+
+def test_cheapest_cost_per_unit_of_delta_is_selected_for_measured_setups():
+    config, contract, quote, signal = scenario()
+    signal.update(max_cost_bps=50)
+    config["contracts"]["max_spread_pct"] = 5
+    other = {**contract, "symbol": "NFO:XYZ26NOV990CE", "tradingsymbol": "XYZ26NOV990CE", "strike": 990}
+    years = (pd.Timestamp("2026-11-24 15:40", tz=NOW.tz) - NOW).total_seconds() / (365 * 86400)
+    mid = option_value(1000, 990, years, .06, .28, "CE")[0]
+    quotes = {contract["symbol"]: {**quote, "bid": quote["bid"] - .2, "ask": quote["ask"] + .2},
+              other["symbol"]: {**quote, "symbol": other["symbol"], "bid": mid - .05, "ask": mid + .05}}
+    chosen, reasons = select_contract([contract, other], quotes, signal, 1000, NOW, config)
+    assert reasons == [] and chosen["symbol"] == other["symbol"]

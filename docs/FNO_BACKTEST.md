@@ -1,5 +1,19 @@
 The F&O backtest evaluates completed stock-chart setups and simulated entry triggers. It reports direction-adjusted underlying movement, initial-stop behavior and the configured chart exit. It does not convert stock returns into option-premium returns.
 
+**Current rules (`fno-v2`).** The opening-drive study covers 1 April to 9 November 2026: 1,114 entries, +11.6 bps of the stock per trade before costs, +1.6 bps after the assumed 10 bps round-trip cost, average hold 11 minutes. Open the [summary](../reports/fno_backtest_opening_drive_2026-11-10/summary.md) and [trade ledger](../reports/fno_backtest_opening_drive_2026-11-10/triggered_trades.csv). Reproduce it with:
+
+```powershell
+& .\.venv\Scripts\python.exe -m scanner fno backtest `
+  --start 2026-04-01 --end 2026-11-09 `
+  --allow-current-universe --exclude-symbols INFY,ATHERENERG `
+  --output data\fno\backtest_opening_drive.json `
+  --report-dir reports\fno_backtest_opening_drive
+```
+
+The summary now has a section, **Results after an assumed trading cost**, giving each setup's average in basis points before and after `replay.cost_bps` and its break-even cost. The cost is a single configured figure, not a measured option spread. Opening-drive ranks are relative to the stocks in the study, so a `--symbols` subset changes which stocks qualify.
+
+The sections below describe the earlier `fno-v1` pullback and compression study. Those setups are now off by default, and that study used the earlier conventions: the candle after each signal was skipped and trades could run for three hours.
+
 The completed fixed-rule study reached **50 triggered entries from 140 setups**, evaluating May 1 through October 27, 2026 across 216 stocks. It stopped after that complete day reached the requested count, with 22 winning and 28 losing chart trades, mean gross +0.176R and median -0.134R. Pullbacks contributed 42 entries; all eight compression/retest entries lost in this sample. These observations do not establish a profitable options strategy or justify changing rules on the same sample.
 
 Open the [complete result](../reports/fno_backtest_50_2026-11-04/summary.md), [50-trade ledger](../reports/fno_backtest_50_2026-11-04/triggered_trades.csv), and [stop ledger](../reports/fno_backtest_50_2026-11-04/stops_hit.csv). The [expanded data audit](../data/fno/backtest_quality_audit_expanded.json) independently checked all 50 distinct trades and 257 available forward horizons against stored candles: 2,826 checks passed with zero discrepancies. Longer horizons are unavailable when they cross the session end; they are never fabricated.

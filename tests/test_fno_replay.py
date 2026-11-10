@@ -4,11 +4,13 @@ from copy import deepcopy
 import pandas as pd
 import pytest
 
-from scanner.fno.config import DEFAULTS
+from fno_legacy import legacy_config
 from scanner.fno.replay import run_replay, simulate_signal
 from scanner.fno.store import FnoStore
 
 TZ = "Asia/Kolkata"
+# The stricter pre-v2 conventions; version 2 defaults are tested in test_fno_opening.py.
+DEFAULTS = legacy_config()
 
 
 def signal():
@@ -329,7 +331,7 @@ def test_cheap_precheck_preserves_real_engine_events_and_all_path_outcomes(tmp_p
         store.upsert_bars("XYZ", interval, frame)
     store.upsert_bars("NIFTY 50", "5minute", benchmark)
     baseline_config = deepcopy(DEFAULTS)
-    baseline_config["replay"] = {"fast_precheck": False}
+    baseline_config["replay"]["fast_precheck"] = False
     baseline = run_replay(store, baseline_config, "2026-11-04", "2026-11-04")
     optimized = run_replay(store, DEFAULTS, "2026-11-04", "2026-11-04")
     assert baseline["summary"]["filled"] >= 1

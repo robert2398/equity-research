@@ -252,6 +252,43 @@ def _cell(value):
     return str(value if value is not None else "—").replace("|", "\\|").replace("\r", " ").replace("\n", " ")
 
 
+def _cost_lines(trades):
+    """Per-setup outcomes in basis points of the underlying, before and after an assumed cost.
+
+    The cost is one configured round-trip figure for the option expressed as the
+    stock move needed to pay for it; it is an assumption, not a measured fill.
+    """
+    rows = [t for t in trades if _number(t.get("gross_underlying_bps")) is not None
+            and _number(t.get("net_underlying_bps")) is not None]
+    if not rows:
+        return []
+    cost = _number(rows[0].get("assumed_cost_bps")) or 0.0
+    lines = ["## Results after an assumed trading cost", "",
+             f"Basis points of the underlying per trade (1 bps = 0.01%). An assumed round-trip option cost of "
+             f"**{_fmt(cost, 1)} bps** is deducted from every trade; it is a configured estimate "
+             "(`replay.cost_bps`), not a measured spread. The break-even cost is the largest cost at which the "
+             "average trade would still not lose.", "",
+             "| Setup | Trades | Win rate before cost | Mean before cost | Mean after cost | Win rate after cost | "
+             "Break-even cost | Average loss | Worst | Mean hold (min) |",
+             "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    groups = [("All setups", rows)] + [(name, [t for t in rows if t.get("setup") == name])
+                                       for name in sorted({str(t.get("setup")) for t in rows})]
+    if len(groups) == 2:
+        groups = groups[1:]
+    for name, part in groups:
+        gross = [float(t["gross_underlying_bps"]) for t in part]
+        net = [float(t["net_underlying_bps"]) for t in part]
+        losses = [value for value in gross if value < 0]
+        hold = [float(t["holding_minutes"]) for t in part if _number(t.get("holding_minutes")) is not None]
+        lines.append(
+            f"| {_cell(name)} | {len(part)} | {_percentage(sum(v > 0 for v in gross) / len(part))} | "
+            f"{_fmt(sum(gross) / len(part), 1)} | {_fmt(sum(net) / len(part), 1)} | "
+            f"{_percentage(sum(v > 0 for v in net) / len(part))} | {_fmt(sum(gross) / len(part), 1)} | "
+            f"{_fmt(sum(losses) / len(losses), 1) if losses else 'n/a'} | {_fmt(min(gross), 1)} | "
+            f"{_fmt(sum(hold) / len(hold), 1) if hold else 'n/a'} |")
+    return lines + [""]
+
+
 def _markdown(result, report, trades, paths):
     sample, strategy = report["sample"], report["strategy"]
     original = result.get("summary", {})
@@ -277,6 +314,7 @@ def _markdown(result, report, trades, paths):
              f"{_percentage(strategy['gross_R']['win_fraction'])} | {strategy['gross_R']['losses']} | "
              f"{_fmt(strategy['gross_R']['mean_loss'])} | {_fmt(strategy['gross_R']['minimum'])} | "
              f"{_fmt(strategy['holding_minutes']['mean'], 1)} | {_fmt(strategy['mfe_R']['mean'])} | {_fmt(strategy['mae_R']['mean'])} |", "",
+             *_cost_lines(trades),
              "## Forward horizons", "",
              "Raw horizons mark the underlying path even after a strategy exit. Fixed-stop outcomes exit at the original stop if hit; "
              "they do not apply strategy targets, trailing stops, or progress exits. Percentage returns in the CSV are percentage points. "

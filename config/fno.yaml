@@ -1,5 +1,5 @@
 # Initial research rules. This assistant never places broker orders.
-version: fno-v1
+version: fno-v2
 data:
   db_path: data/fno/assistant.sqlite3
   daily_days: 220
@@ -11,7 +11,7 @@ data:
 session:
   open: '09:15'
   continuous_close: '15:15'  # F&O cash-underlying continuous session, before CAS
-  entry_start: '09:35'
+  entry_start: '09:35'      # pullback entries; the opening drive has its own start below
   last_entry: '14:30'
   flat_at: '15:10'
 trend:
@@ -34,6 +34,41 @@ setup:
   stop_buffer_atr: 0.10
   chase_atr: 0.25
   entry_valid_bars: 2
+  # Setups that may raise entries: OPENING_DRIVE, PULLBACK, COMPRESSION_RETEST.
+  # Measured Apr-Nov 2026 on 9,500 pullback and 440 compression entries: about +2 bps of
+  # the stock before costs at 15-30 minutes, against roughly 10 bps to trade the option.
+  # Both remain available here, but only the opening drive is on.
+  enabled: [OPENING_DRIVE]
+# Opening drive: at 09:20 rank every stock by its first candle's volume against its own
+# history, then follow the first candle for the busiest names. Measured Apr-Nov 2026.
+opening_drive:
+  enabled: true
+  entry_start: '09:20'
+  top_n: 10                 # rank cut-off by opening relative volume
+  min_rvol: 3.0             # first-candle volume vs the stock's usual 09:15 candle
+  min_body_datr: 0.10       # first-candle body as a fraction of the daily ATR
+  stop_datr: 0.15           # initial stop distance; this is 1R
+  entry_tolerance_datr: 0.03
+  chase_datr: 0.05          # skip the entry if price has already run this far
+  entry_valid_minutes: 4    # the edge roughly halves when entered five minutes late
+  cap_r: 6.0                # far cap only; fixed profit targets cut the measured edge
+  scenario_r: 2.0           # move used for the displayed premium scenario
+  max_cost_bps: 8.0         # skip contracts whose spread and charges need a bigger stock move than
+                            # this to break even; the measured average move is about 12 bps
+  min_coverage: 0.9         # share of the universe needing a first candle before ranking
+# Fast exits. "default" applies to every setup; a setup name overrides single values.
+exit:
+  default:
+    time_stop_minutes: 30   # leave after half an hour whatever has happened
+    progress_minutes: 10    # leave early when the trade has gone nowhere...
+    min_progress_r: 0.5     # ...measured as best move so far in R
+    trail_activate_r: 1.0   # once the stock has moved 1R in favour...
+    trail_distance_r: 1.0   # ...the stop follows the best live price 1R behind
+  OPENING_DRIVE:
+    progress_minutes: 0     # no progress deadline; stop, ratchet and time stop decide
+replay:
+  skip_confirmation_bar: false  # true restores the stricter pre-v2 fill convention
+  cost_bps: 10.0            # assumed round-trip option cost, in bps of the underlying
 contracts:
   max_quote_age_seconds: 5
   max_trade_age_seconds: 120
@@ -46,7 +81,8 @@ contracts:
   scenario_minutes: 30
   depth_participation: 0.25
   cost_move_max_fraction: 0.15
-  charges_roundtrip_per_lot_inr: 100.0  # configurable conservative estimate, not a tax schedule
+  charges_roundtrip_per_lot_inr: 50.0   # fixed part (brokerage and GST); an estimate, not a tax schedule
+  charges_pct_of_premium: 0.25          # part that scales with premium: STT on the sale, exchange fees
   slippage_pct: 0.10
 risk:
   reference_capital: 1000000.0  # paper sizing reference, not your account balance
@@ -59,8 +95,8 @@ risk:
   max_positions: 2
   one_per_sector: true
   premium_stop_pct: 25.0
-  max_hold_minutes: 180
-  progress_minutes: 20
+  max_hold_minutes: 180     # outer limit; the exit section's time stop is normally earlier
+  progress_minutes: 20      # used only for trades opened before exit policies existed
   min_progress_r: 0.5
   cooldown_minutes: 15
 eligibility:

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard",
+      "runtimeExecutable": "C:\\projects\\equity-research\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["bear_reversal/serve_ui.py", "8124"],
+      "port": 8124
+    }
+  ]
+}

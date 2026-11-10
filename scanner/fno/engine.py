@@ -135,10 +135,15 @@ def analyze_symbol(symbol: str, daily: pd.DataFrame, hourly: pd.DataFrame,
         result["reasons"].append("Stock lacks relative strength/weakness in the permitted direction")
         return result
     tick = float(config.get("tick_size", config.get("setup", {}).get("cash_tick", .05)))
-    signal = pullback(featured, side, config, tick) or compression_retest(
-        featured, side, config, tick, memo=prepared.get("setup_cache") if prepared is not None else None)
+    enabled = config.get("setup", {}).get("enabled") or ("PULLBACK", "COMPRESSION_RETEST")
+    signal = pullback(featured, side, config, tick) if "PULLBACK" in enabled else None
+    if signal is None and "COMPRESSION_RETEST" in enabled:
+        signal = compression_retest(featured, side, config, tick,
+                                    memo=prepared.get("setup_cache") if prepared is not None else None)
     if signal is None:
-        result["reasons"].append("Waiting for a completed pullback resumption or compression retest")
+        result["reasons"].append("Waiting for a completed " + " or ".join(
+            {"PULLBACK": "pullback resumption", "COMPRESSION_RETEST": "compression retest"}[name]
+            for name in ("PULLBACK", "COMPRESSION_RETEST") if name in enabled))
         return result
     unit_risk = sign * (signal["entry"] - signal["stop"])
     if unit_risk <= 0:
