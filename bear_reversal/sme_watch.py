@@ -7,6 +7,10 @@ volume, while the main-market bull clock (ipo_lab.clock) reads WASHOUT or EARLY 
 a buy for FRESH sessions after the breakout while the clock still qualifies. Stocks in their first
 year belong to the IPO watch (rule A). Evidence and limits: reports/SME_BULL_LAB.md.
 
+How much to buy comes from the market ladder (market_ladder.py): each BUY carries the size for
+today's rung (pilot in a washout / attempt, half in prove-it, full once the market confirms). The
+ladder never adds or removes a BUY; the top-ups of earlier signals are in the signal ledger.
+
 Momentum research list (unchanged, not a buy):
 
 Rule (chosen by sme_lab.py, reports/SME_LAB.md): an SME-board stock whose 6-month return ranks in
@@ -133,9 +137,13 @@ def _num(x, nd=2):
     return round(float(x), nd) if x is not None and np.isfinite(x) else None
 
 
-def buys(w: dict, i: int, clock_now: str, clk: pd.Series, max_names: int = 15) -> dict:
+def buys(w: dict, i: int, clock_now: str, clk: pd.Series, max_names: int = 15,
+         ladder: dict | None = None) -> dict:
     """Breakouts of the last FRESH sessions (BUY when the clock qualifies) and seasoned names
-    basing within 10% below their pivot, as of session i."""
+    basing within 10% below their pivot, as of session i. With `ladder` (market_ladder summary)
+    each BUY also carries the position size for today's rung: stage, size, ladder_state."""
+    from market_ladder import slim, stage_for
+    size = stage_for("sme", ladder)
     f = buy_features(w)
     dates = f["breakout"].index
     good = clk.reindex(dates).ffill().isin(BUY_CLOCK)
@@ -161,6 +169,8 @@ def buys(w: dict, i: int, clock_now: str, clk: pd.Series, max_names: int = 15) -
                      "turnover_cr": _num(f["tv60"][sym].iat[i] / 1e7),
                      "rs_sme": _num(f["rs"][sym].iat[i], 1),
                      "why_not": why})
+        if size and rows[-1]["status"] == "BUY":
+            rows[-1].update(size)
     order = {"BUY": 0, "BREAKOUT": 1, "FAILED": 2}
     rows.sort(key=lambda r: (order[r["status"]], r["sessions_ago"], -(r["rs_sme"] or 0)))
     seen = {r["symbol"] for r in rows}
@@ -177,6 +187,7 @@ def buys(w: dict, i: int, clock_now: str, clk: pd.Series, max_names: int = 15) -
                        "rs_sme": _num(f["rs"][sym].iat[i], 1)})
     basing.sort(key=lambda r: (r["to_pivot"], -(r["rs_sme"] or 0)))
     return {"clock": clock_now, "clock_ok": clock_now in BUY_CLOCK, "fresh": FRESH,
+            "ladder": slim(ladder),
             "signals": rows[:max_names], "basing": basing[:max_names],
             "rule": f"SME board · listed > 1 year · close above the prior 1-year closing high on >= "
                     f"{BREAKOUT_VOL}x volume · bull clock {' / '.join(BUY_CLOCK).lower()} · liquidity >= "
@@ -221,7 +232,13 @@ def run(as_of=None, max_names: int = MAX_NAMES) -> dict:
         clk = bull_clock()
         clock_now = str(clk.reindex(c.index).ffill().iloc[i])
         wb = {k: (v.loc[v.index <= c.index[i]] if isinstance(v, pd.DataFrame) else v) for k, v in w.items()}
-        buy = buys(wb, i, clock_now, clk)
+        try:                                          # position size for today's market rung
+            from market_ladder import today as ladder_today
+            lad = ladder_today(c.index[i])
+        except Exception as e:                        # the buy list never depends on it
+            lad = None
+            print(f"  market ladder skipped: {type(e).__name__}: {e}")
+        buy = buys(wb, i, clock_now, clk, ladder=lad)
     except Exception as e:                            # the momentum list never depends on it
         buy = {"error": f"{type(e).__name__}: {e}", "signals": [], "basing": []}
     return {"as_of": str(c.index[i].date()), "names": names, "eligible": int(elig.sum()), "buy": buy,

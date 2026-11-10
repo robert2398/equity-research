@@ -10,6 +10,59 @@ export const signed = (v, d = 0) => (v == null ? '–' : `${v >= 0 ? '+' : ''}${
 
 const GRADE_PILL = { 'A+': 'green', A: 'green', B: 'grey', X: 'red' };
 
+// ---- market ladder (market_ladder.py): position size by how far the recovery has got
+const FRACTION = { 0.25: '¼', 0.5: '½', 0.75: '¾' };
+/** A position size as a share of a full position. */
+export const sizeLabel = (z) => (z == null ? '–' : z >= 1 ? 'full' : FRACTION[z] || `${Math.round(z * 100)}%`);
+
+const RUNG_PILL = { WASHOUT: 'amber', ATTEMPT: 'amber', 'PROVE IT': 'hi', CONFIRMED: 'green' };
+const ACTION_PILL = { PILOT: 'amber', ADD: 'hi', FULL: 'green', PROMOTED: 'green', 'TOP UP': 'green' };
+
+/** Today's market rung and the size it gives a buy signal. */
+export function LadderPill({ ladder }) {
+  if (!ladder) return null;
+  return <span className={`pill ${RUNG_PILL[ladder.state] || 'grey'}`} title={ladder.note}>
+    {ladder.state.toLowerCase()} · {ladder.size > 0 ? `${ladder.stage.toLowerCase()} ${sizeLabel(ladder.size)}` : 'no new positions'}</span>;
+}
+
+/** One line: where breadth is and what the next rung needs. */
+export function ladderLine(ladder) {
+  if (!ladder || ladder.breadth200 == null) return '';
+  const pct = (v) => `${Math.round(v * 100)}%`;
+  const parts = [`${pct(ladder.breadth200)} of stocks above their 200-DMA`];
+  if (ladder.low != null && ladder.low_date) parts.push(`${Math.round(ladder.window / 21)}-month low ${pct(ladder.low)} on ${ladder.low_date}`);
+  if (ladder.next) parts.push(`${ladder.next.state.toLowerCase()} needs ${pct(ladder.next.needs)} (${ladder.next.gap_pp > 0 ? '+' : ''}${ladder.next.gap_pp} points)`);
+  if (ladder.confirmed_on) parts.push(`confirmed since ${ladder.confirmed_on}`);
+  return parts.join(' · ');
+}
+
+/** The size a scan gives one of today's buy signals (Next Bull grade A / A+, SME BUY). */
+export function SizePill({ r }) {
+  if (!r.stage) return null;
+  return <span className={`pill ${ACTION_PILL[r.stage] || 'grey'}`}
+    title={`market ladder ${r.ladder_state}: ${r.stage === 'WATCH' ? 'no new position' : `buy ${sizeLabel(r.size)} of a full position`} — earlier signals are topped up as the market climbs (Signal Ledger)`}>
+    {r.stage.toLowerCase()}{r.size > 0 && ` ${sizeLabel(r.size)}`}</span>;
+}
+
+/** What the ladder says to do with one ledger episode (signal_ledger._ladder_fields). */
+export function Stage({ r }) {
+  const a = r.ladder_action;
+  if (!a) return <span className="mut">{r.size_held != null && r.size_held < 1 ? sizeLabel(r.size_held) : '–'}</span>;
+  const text = a === 'TOP UP' ? `top up ${sizeLabel(r.size_held)} → ${sizeLabel(r.size_target)}`
+    : a === 'PROMOTED' ? `promoted → ${sizeLabel(r.size_target)}`
+      : a === 'HOLD' ? `hold ${sizeLabel(r.size_held)}`
+        : a === 'WATCH' || a === 'LAPSED' ? a.toLowerCase() : `${a.toLowerCase()} ${sizeLabel(r.size_target)}`;
+  const tip = [
+    `market ladder: ${r.ladder_first} when the signal fired, ${r.ladder_now} today`,
+    a === 'PROMOTED' ? `the market has climbed since this signal: buy ${sizeLabel(r.size_target)} of a full position` : null,
+    a === 'TOP UP' ? `you hold ${sizeLabel(r.size_held)}; today's rung allows ${sizeLabel(r.size_target)}` : null,
+    a === 'WATCH' ? 'off today\'s list and the market has not climbed: nothing to do' : null,
+    r.ladder_why,
+    r.carry_left != null && a !== 'LAPSED' ? `${r.carry_left} sessions left for a top-up` : null,
+  ].filter(Boolean).join(' · ');
+  return <span className={`pill ${ACTION_PILL[a] || 'grey'}`} title={tip}>{text}</span>;
+}
+
 /** Next Bull grade of a main-board episode (signal_ledger._grade_episodes): sets its priority. */
 export function LedgerGrade({ r }) {
   if (!r.grade) return null;
@@ -86,6 +139,12 @@ export function DecideModal({ row, asOf, onClose, onSaved }) {
   const [buyPrice, setBuyPrice] = useState(row.buy_price ?? row.last_price ?? '');
   const [exitDate, setExitDate] = useState(row.exit_date || asOf);
   const [exitPrice, setExitPrice] = useState(row.exit_price ?? row.last_price ?? '');
+  // position size: what you hold, else what today's market rung gives this signal, else full
+  const [size, setSize] = useState(row.size_held ?? (row.size_target > 0 ? row.size_target : row.size_now > 0 ? row.size_now : 1));
+  const [addDate, setAddDate] = useState(asOf);
+  const [addPrice, setAddPrice] = useState(row.last_price ?? '');
+  const topping = row.status === 'BOUGHT' && row.size_held != null && size > row.size_held + 1e-9;
+  const sizes = [...new Set([0.25, 0.5, 1, row.size_held, row.size_target].filter((z) => z > 0))].sort((a, b) => a - b);
   const [err, setErr] = useState(null);
   const [busy, setBusy] = useState(false);
   const pos = row.position || {};
@@ -113,6 +172,10 @@ export function DecideModal({ row, asOf, onClose, onSaved }) {
     const patch = { status };
     if (note.trim()) patch.comment = note;
     if (status === 'BOUGHT' || status === 'EXITED') Object.assign(patch, { buy_date: buyDate, buy_price: buyPrice });
+    if (status === 'BOUGHT') {
+      patch.size = size;
+      if (topping) Object.assign(patch, { add_date: addDate, add_price: addPrice });
+    }
     if (status === 'EXITED') Object.assign(patch, { exit_date: exitDate, exit_price: exitPrice });
     setBusy(true);
     const res = await saveLedgerEntry(row.id, patch);
@@ -163,6 +226,30 @@ export function DecideModal({ row, asOf, onClose, onSaved }) {
                 <label>date <input type="date" value={buyDate || ''} onChange={(e) => setBuyDate(e.target.value)} /></label>
                 <label>price ₹ <input type="number" step="0.05" value={buyPrice} onChange={(e) => setBuyPrice(e.target.value)} /></label>
               </div>
+            </div>
+          )}
+          {status === 'BOUGHT' && (
+            <div className="note-sec">
+              <h3>Position size (share of a full position)</h3>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                {sizes.map((z) => (
+                  <button key={z} type="button" className={`btn xs ${Math.abs(size - z) < 1e-9 ? 'primary' : ''}`}
+                    onClick={() => setSize(z)}>{sizeLabel(z)}</button>
+                ))}
+                {row.ladder_now && <span className="small">market ladder {row.ladder_now.toLowerCase()}
+                  {row.size_now > 0 ? ` → ${sizeLabel(row.size_now)}` : ' → no new position'}
+                  {row.ladder_first && row.ladder_first !== row.ladder_now && ` (${row.ladder_first.toLowerCase()} when it fired)`}
+                  {row.ladder_why && ` · ${row.ladder_why}`}</span>}
+              </div>
+              {topping && (
+                <div className="form-row" style={{ marginTop: 8 }}>
+                  <label>top-up date <input type="date" value={addDate || ''} onChange={(e) => setAddDate(e.target.value)} /></label>
+                  <label>top-up price ₹ <input type="number" step="0.05" value={addPrice} onChange={(e) => setAddPrice(e.target.value)} /></label>
+                  <span className="small">from {sizeLabel(row.size_held)} to {sizeLabel(size)} · averaged into your buy price by size</span>
+                </div>
+              )}
+              {row.tranches?.length > 1 && <div className="small" style={{ marginTop: 6 }}>
+                bought in {row.tranches.length} parts: {row.tranches.map((t) => `${sizeLabel(t.size)} at ₹${fmtNum(t.price, 2)} on ${t.date}`).join(' · ')}</div>}
             </div>
           )}
           {status === 'EXITED' && (

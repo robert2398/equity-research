@@ -160,6 +160,11 @@ export default function IpoWatch({ onOpen }) {
         <div className="card"><div className="label">Bull clock</div>
           <div className="value"><span className={`pill ${CLOCK_PILL[ck.phase] || 'grey'}`}>{ck.phase}</span></div>
           <div className="note">rule A {open.A ? 'open' : 'closed'} · rule B {open.B ? 'open' : 'closed (needs early bull)'}</div></div>
+        {data.ladder && (
+          <div className="card"><div className="label">Market ladder</div>
+            <div className="value" style={{ fontSize: 16 }}><span className="pill grey" title={data.ladder.note}>{data.ladder.state.toLowerCase()}</span></div>
+            <div className="note">{data.ladder_sizes_ipo ? 'sizes IPO buys too' : 'context only: the IPO rule was not regime-sensitive in the audit, so its buys are not sized by it'}</div></div>
+        )}
         <div className="card"><div className="label">Buy signals</div>
           <div className="value pos">{data.counts.BUY}</div>
           <div className="note">breakout in the last 10 sessions under rule A or B</div></div>

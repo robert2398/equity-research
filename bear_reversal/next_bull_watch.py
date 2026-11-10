@@ -22,6 +22,9 @@ Outputs (all watch/research — no orders):
            Tested: fresh (day-1) signals did NOT beat ones that had held 10-20
            sessions, so there is time to research before buying.
   warming  one notch below: RS126 >= 75 · accel >= 1.2x · above 50-DMA
+  ladder   market_ladder.py: the rung the recovery has reached (washout / attempt / prove it /
+           confirmed) and the position size for it. Grade A+ / A signals carry stage and size;
+           the ladder never changes a grade. Top-ups of earlier signals are in the signal ledger.
 """
 from __future__ import annotations
 
@@ -165,6 +168,15 @@ def run(max_names: int = 40) -> dict:
     regime["history"] = {"dates": [d.strftime("%Y-%m-%d") for d in hist.index[::5]],
                          "breadth200": [round(float(v), 3) for v in hist.iloc[::5]]}
 
+    ladder = None
+    try:                                              # market ladder: position size by rung, written
+        import market_ladder                          # before the ledger so its view sees today's
+        lcfg = market_ladder.config()
+        ladder = market_ladder.summary(market_ladder.frame(panel.breadth200, lcfg), lcfg)
+        market_ladder.write(ladder)
+    except Exception as e:
+        print(f"market ladder skipped: {type(e).__name__}: {e}")
+
     graded = None
     try:                                              # Next Bull lab grade (nextbull_lab.py)
         listed = feats[sig | warming(feats)]
@@ -179,6 +191,11 @@ def run(max_names: int = 40) -> dict:
         print(f"signal ledger skipped: {type(e).__name__}: {e}")
     signals = _rows(feats[sig], held, graded)[:max_names]
     warm = _rows(feats[warming(feats)], None, graded)[:max_names]
+    if ladder is not None:                            # size the names the grade calls a take
+        size = market_ladder.stage_for("main", ladder)
+        for r in signals:
+            if size and r.get("grade") in ("A+", "A"):
+                r.update(size)
 
     # research-dossier facts for every listed name (no LLM; research_dossier.py)
     from research_dossier import facts
@@ -194,6 +211,7 @@ def run(max_names: int = 40) -> dict:
                       f"{panel.close.shape[1]})",
             "generated_utc": datetime.now(timezone.utc).isoformat(),
             "regime": regime,
+            "ladder": None if ladder is None else market_ladder.slim(ladder),
             "criteria": {"signal": "close <= ₹200 · 6-month RS rank >= 90 (full market) · "
                                    "20d median turnover >= 1.5x prior 120d · turnover >= ₹2cr · "
                                    "close >= ₹5 · no ETFs",

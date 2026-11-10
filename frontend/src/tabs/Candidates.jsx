@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { fetchLedger, fmtPct } from '../api.js';
-import { DecideModal, LedgerButton, ledgerEpisode } from '../components/LedgerDecide.jsx';
+import { DecideModal, LadderPill, LedgerButton, SizePill, ladderLine, ledgerEpisode } from '../components/LedgerDecide.jsx';
 
 const SCORE_COLORS = { leadership: '#4f8cff', base_quality: '#26a269', volume: '#f2a33c',
   entry_risk: '#c06ad8', sector: '#e0e6a8' };
@@ -37,10 +37,13 @@ function SmeMomentum({ sm, legacy, list, onOpen }) {
     <>
     <h3 style={{ marginTop: 4 }}>SME buy signals{' '}
       <span className={`pill ${buy.clock_ok ? 'green' : 'grey'}`} title="main-market bull clock; the rule is tested only in washout / early bull">
-        clock {(buy.clock || '–').toLowerCase()}</span></h3>
+        clock {(buy.clock || '–').toLowerCase()}</span>{' '}
+      <LadderPill ladder={buy.ladder} /></h3>
     <div className="panel" style={{ overflowX: 'auto' }}>
       {buy.error ? <span className="neg small">SME buy rule skipped: {buy.error}</span> : <>
         <div className="small" style={{ marginBottom: 6 }}>{buy.rule}</div>
+        {buy.ladder && <div className="small" style={{ marginBottom: 6 }}>Market ladder: {ladderLine(buy.ladder)}.
+          Each buy shows the size for today&apos;s rung; earlier buys are topped up in the Signal Ledger when the market climbs.</div>}
         <table>
           <thead><tr>
             <th>Status</th><th>Symbol</th><th title="breakout session · sessions ago">Breakout</th>
@@ -55,7 +58,7 @@ function SmeMomentum({ sm, legacy, list, onOpen }) {
               <tr key={n.symbol} onClick={() => onOpen(n.symbol)}>
                 <td><span className={`pill ${n.status === 'BUY' ? 'green' : n.status === 'BREAKOUT' ? 'amber' : n.status === 'FAILED' ? 'red' : 'grey'}`}
                   title={n.why_not || (n.status === 'BASING' ? 'listed > 1 year, within 10% below its pivot — a breakout on 1.5x volume would make it a buy' : 'buy window open')}>
-                  {n.status.toLowerCase()}</span></td>
+                  {n.status.toLowerCase()}</span> <SizePill r={n} /></td>
                 <td>{n.symbol}</td>
                 <td>{n.breakout_date ? `${n.breakout_date} · ${n.sessions_ago}d` : '–'}</td>
                 <td>{n.pivot ?? '–'}</td><td>{n.close ?? '–'}</td>

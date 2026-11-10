@@ -16,6 +16,7 @@ import signal_ledger as sl                      # noqa: E402
 @pytest.fixture(autouse=True)
 def isolate_bear_market(tmp_path, monkeypatch):
     monkeypatch.setattr(sl, "BEAR_MARKET", tmp_path / "bear.json")
+    monkeypatch.setattr(sl, "LADDER", tmp_path / "ladder.json")    # no ladder unless a test writes one
 
 
 @pytest.fixture

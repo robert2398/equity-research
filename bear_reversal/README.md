@@ -276,6 +276,35 @@ into 2020-22 (post-covid run + 2022 washout) and 2023-24 (the 2023 run); 2025 en
   held), B = no veto but clock not ready (−19%, +13%), X = hard veto (−10%, +27%; −12% a
   year in 2016-19). 2018 lost money under every variant (a washout that did not turn).
 
+## Market ladder: position size by rung (`market_ladder.py`, 10 Nov 2026)
+
+Why and evidence: `docs/SCAN_AUDIT_2026-11-10.md`. The bull clock read washout / early bull through
+the 2018-19 and 2025-26 bear markets, so the ladder splits the nine months after a washout by how
+far breadth (share of stocks above their 200-DMA) has recovered:
+
+| Rung | Breadth | Size of a Next Bull / SME buy |
+|---|---|---|
+| WASHOUT | under 35% within 9 months, not yet +10 points | pilot ¼ |
+| ATTEMPT | +10 points off the low, under 45% | pilot ¼ |
+| PROVE IT | 45-60% | ½ |
+| CONFIRMED | 60%+ (never reached in 2018, 2019, 2025, 2026) | full |
+| MATURE BULL / NEUTRAL | no washout in 9 months | no new positions |
+
+- **It never creates or removes a signal.** It sizes what a scan already calls a buy: grade A+ / A
+  on Next Bull Watch and BUY on the SME table show `pilot ¼`, `add ½` or `full`.
+- **Top-ups live in the Signal Ledger.** Each buyable episode records the rung it fired on and
+  today's rung. When the market climbs, undecided signals show as *promoted* and holdings as
+  *top up*, in the new **Top up** view, for 126 sessions after the first signal. A signal the
+  market never confirms keeps the size it has. One that closes 50% below its high lapses, and an
+  SME breakout that has slipped more than 10% below its pivot is never promoted.
+- **Recording a top-up** (Decide pop-up): pick the new size and the top-up price; it is averaged
+  into the buy price by size and each tranche is kept. A pilot uses a quarter of a slot. Holdings
+  bought before the ladder count as full positions.
+- **IPO signals are not sized** by default: the IPO rule was not regime-sensitive in the audit.
+  Add `ipo` to `ladder.apply_to` in `bear_reversal.yaml` to size them too.
+- **The sizes are untested defaults** (`ladder.size`), and the ladder rests on three or four real
+  episodes since 2015. `python bear_reversal/market_ladder.py` prints today's rung.
+
 ## Known deviations from the plan (disclosed in every report)
 
 - The ₹500-crore full-market-cap universe requires the dated shares-outstanding

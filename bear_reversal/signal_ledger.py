@@ -33,6 +33,12 @@ Files, so the daily run never touches your decisions:
 view() merges both: priority queue, holdings with the lab's exit (close 50% below the highest
 close since entry), stop alerts, free slots. No LLM, no network.
 
+Position size (market_ladder.py, ui_data/market_ladder.json): each buyable Next Bull / SME
+episode carries the market rung it fired on and today's rung. An undecided signal is bought at
+today's size (pilot, half, full); when the market climbs a rung, earlier signals show as
+PROMOTED and holdings as TOP UP until they are older than the ladder's carry window. Your size
+and each top-up tranche are stored with your decision; a top-up averages into the buy price.
+
     python bear_reversal/signal_ledger.py      # rebuild the market file and print the view
 """
 from __future__ import annotations
@@ -61,6 +67,7 @@ IPO_PREFIX = "IPO."
 BEAR_MARKET = HERE / "ui_data" / "signal_ledger_bear.json"
 BEAR_PREFIX = "BEAR."
 USER = HERE / "state" / "signal_ledger.json"
+LADDER = HERE / "ui_data" / "market_ladder.json"   # market_ladder.py: position size by market rung
 QUIET = 60          # sessions without a signal before a new episode can start
 LIVE = 60           # an episode stays live this many sessions after its last signal
 BACKFILL = 260      # episodes that started within the last ~year are listed
@@ -268,8 +275,11 @@ def _sme_breakout_episodes(w: dict, clk=None) -> tuple[list[dict], int]:
             active = good[b0:b1 + 1] & (f["cf"].iloc[b0:b1 + 1, j].to_numpy() >= (1 - SLIP_MAX) * pivot)
             last = b0 + int(np.flatnonzero(active)[-1])
             on_today = bool(b1 == i and active[-1])
+            vs_pivot = float(f["cf"].iat[i, j] / pivot - 1)      # latest close vs this breakout's pivot
             eps.append({
                 "id": ep_id, "symbol": sym, "key": sym, "board": "sme", "signal_kind": "sme_breakout",
+                # a breakout that closes more than SLIP_MAX back below its pivot has failed (sme_watch)
+                "vs_pivot": _r(vs_pivot, 4), "failed": bool(vs_pivot < -SLIP_MAX),
                 "first_date": str(dates[b0].date()), "first_price": _r(f["raw"].iat[b0, j]),
                 "first_mcap": None, "first_tier_a": False, "first_small": False,
                 "tier_a_now": False, "small_now": False, "mcap_now": None,
@@ -425,9 +435,53 @@ def _clean_patch(patch: dict) -> dict:
                 raise ValueError(f"{k} must be YYYY-MM-DD")
             date.fromisoformat(str(v))
             out[k] = str(v)
+        elif k == "size":                             # fraction of a full position held
+            if v in (None, ""):
+                out[k] = None
+                continue
+            f = float(v)
+            if not 0 < f <= 1:
+                raise ValueError("size must be a fraction of a full position, above 0 and at most 1")
+            out[k] = round(f, 4)
+        elif k == "add_price":                        # price paid for a top-up (averaged into buy_price)
+            if v in (None, ""):
+                out[k] = None
+                continue
+            f = float(v)
+            if not (f > 0):
+                raise ValueError("add_price must be a positive number")
+            out[k] = round(f, 2)
+        elif k == "add_date":
+            if v in (None, ""):
+                out[k] = None
+                continue
+            if not _DATE.match(str(v)):
+                raise ValueError("add_date must be YYYY-MM-DD")
+            date.fromisoformat(str(v))
+            out[k] = str(v)
         else:
             raise ValueError(f"unknown field {k}")
     return out
+
+
+def _apply_size(e: dict, size: float | None, add_price: float | None, add_date: str | None,
+                last_px: float, today: str) -> None:
+    """Record the position size on a BOUGHT entry. A larger size than before is a top-up: its
+    price (default the latest close) is averaged into buy_price by size, and every tranche is
+    kept. A first buy without a size is a full position, as before the ladder existed."""
+    old = e.get("size")
+    if size is None:
+        if old is None:
+            e["size"] = 1.0
+        return
+    if old is not None and size > old + 1e-9 and e.get("buy_price"):
+        px = add_price or last_px
+        tranches = e.setdefault("tranches", [{"date": e.get("buy_date"), "price": e["buy_price"], "size": old}])
+        tranches.append({"date": add_date or today, "price": px, "size": round(size - old, 4)})
+        e["buy_price"] = round(sum(t["price"] * t["size"] for t in tranches) / sum(t["size"] for t in tranches), 2)
+    elif old is None and e.get("buy_price"):
+        e["tranches"] = [{"date": e.get("buy_date"), "price": e["buy_price"], "size": size}]
+    e["size"] = size
 
 
 def _comments(entry: dict) -> list[dict]:
@@ -464,6 +518,8 @@ def set_entry(ep_id: str, patch: dict) -> dict:
             e.update(comments=comments, note=comment, note_updated_at=stamp)
         e.update(symbol=ep["symbol"], key=ep["key"], first_date=ep["first_date"],
                  board=ep.get("board", "main"))
+        sized = patch.get("size") is not None
+        size, add_price, add_date = (patch.pop(k, None) for k in ("size", "add_price", "add_date"))
         e.update(patch)
         last_px, today = ep["raw"][-1], m["as_of"]
         if e.get("status") == "BOUGHT":
@@ -471,6 +527,9 @@ def set_entry(ep_id: str, patch: dict) -> dict:
                 e["buy_date"] = today
             if not e.get("buy_price"):
                 e["buy_price"] = last_px
+            _apply_size(e, size, add_price, add_date, last_px, today)
+        elif sized and e.get("status") != "EXITED":
+            raise ValueError("mark it BOUGHT before recording a position size")
         if e.get("status") == "EXITED":
             if not e.get("buy_date") or not e.get("buy_price"):
                 raise ValueError("mark it BOUGHT (with a buy price) before EXITED")
@@ -515,6 +574,70 @@ def _ffill(xs: list) -> np.ndarray:
     return a
 
 
+def _load_ladder() -> dict | None:
+    """Today's market ladder with its state history, or None before the first daily run."""
+    try:
+        return json.loads(LADDER.read_text(encoding="utf-8")) if LADDER.exists() else None
+    except (OSError, ValueError):
+        return None
+
+
+def _ladder_fields(lad: dict | None, ep: dict, ue: dict, board: str, pri: int, age: int,
+                   status: str, shown: str, in_queue: bool) -> dict:
+    """Position size for one episode under the market ladder (market_ladder.py).
+
+    The ladder sizes buyable signals (P1-P5) of the boards it applies to: the rung the market
+    was on when the signal fired, the rung today, and what to do about the difference.
+      PILOT / ADD / FULL  an undecided signal still on the list: buy at today's size
+      PROMOTED            an undecided signal whose market has climbed a rung since it fired
+      TOP UP              a holding smaller than today's size
+      HOLD / WATCH        nothing to do
+      LAPSED              no top-up any more: the market left the recovery, the signal is older
+                          than carry_sessions without the size rising, it closed 50% below its
+                          high since the signal, or (SME) it slipped more than 10% below its pivot
+    """
+    held = status == "BOUGHT"
+    out = {"size_held": float(ue.get("size") or 1.0) if held else None, "in_topup": False}
+    if not lad or board not in lad.get("apply_to", []) or pri > QUEUE_MAX_PRIORITY:
+        return out
+    from market_ladder import CYCLE, states_since
+    states = states_since(lad, ep["first_date"])
+    if not states:
+        return out
+    s0, s1 = states[0], states[-1]
+    z0, z1 = float(lad["sizes"].get(s0, 0)), float(lad["sizes"].get(s1, 0))
+    out.update(ladder_first=s0, ladder_now=s1, size_first=z0, size_now=z1)
+    if not held and shown not in OPEN:
+        return out
+    carry = int(lad["carry_sessions"])
+    close = [x for x in ep["close"] if x is not None]
+    why = None
+    if not all(s in CYCLE for s in states):
+        why = "the market left the recovery after this signal"
+    elif close and close[-1] <= (1 - TRAIL) * max(close):
+        why = f"closed {TRAIL:.0%} below its high since the signal"
+    elif ep.get("failed"):                            # SME: the tested rule drops a slipped breakout
+        why = f"closed {-ep['vs_pivot']:.0%} back below its breakout pivot: a failed breakout"
+    elif age > carry:
+        why = f"no higher rung within {carry} sessions of the signal"
+    can_add = why is None and z1 > 0
+    if held:
+        zh = out["size_held"]
+        action = "TOP UP" if can_add and z1 > zh + 1e-9 else "HOLD"
+        target = z1 if action == "TOP UP" else zh
+    elif not can_add:
+        action, target = "LAPSED", 0.0
+    elif z1 > z0 + 1e-9:
+        action, target = "PROMOTED", z1
+    elif in_queue or ep.get("on_list_today"):
+        action, target = lad["stages"].get(s1, "WATCH"), z1
+    else:
+        action, target = "WATCH", None
+    out.update(ladder_action=action, size_target=target, in_topup=action in ("TOP UP", "PROMOTED"),
+               carry_left=max(0, carry - age), ladder_why=why)
+    return out
+
+
 def _position(ep: dict, dates: list[str], u: dict) -> dict:
     """Return and trailing stop since your buy, on the split-adjusted closes."""
     if not (u.get("buy_date") and u.get("buy_price")):
@@ -545,6 +668,7 @@ def view() -> dict:
     markets = _load_markets()
     m = markets[0]
     u = _load_user()
+    lad = _load_ladder()
     # Count the source scanner's sessions; use newer market sessions to age stale snapshots.
     session_dates = sorted({d for mk in markets for d in mk["dates"]})
     rows = []
@@ -577,6 +701,9 @@ def view() -> dict:
                        last_price=next((x for x in reversed(ep["raw"]) if x is not None), None),
                        ret_since_signal=_r(close[-1] / close[0] - 1, 4) if close else None,
                        new_this_week=fresh)
+            row.update(_ladder_fields(lad, ep, ue, board, pri, age, status, shown, in_queue))
+            if ue.get("tranches"):
+                row["tranches"] = ue["tranches"]
             if status in ("BOUGHT", "EXITED"):
                 row["position"] = _position(ep, dates, ue)
             rows.append(row)
@@ -591,6 +718,8 @@ def view() -> dict:
     for n, r in enumerate(queue, 1):
         r["queue_rank"] = n
     slots = int(u.get("slots", DEFAULT_SLOTS))
+    # a pilot or half position takes that share of a slot
+    used_size = round(sum(r["size_held"] or 1.0 for r in holdings), 2)
     rules = dict(m.get("rules") or {"quiet": QUIET, "live": LIVE, "trail": TRAIL})
     rules.update(sme=SME_RULE, ipo=IPO_RULE, bear=BEAR_RULE,
                  queue_max_priority=QUEUE_MAX_PRIORITY, queue_signal_age=QUEUE_SIGNAL_AGE,
@@ -600,7 +729,10 @@ def view() -> dict:
             "bear_as_of": as_of.get("bear"),
             "rules": rules, "slots": slots,
             "used": len(holdings), "free": max(0, slots - len(holdings)),
+            "used_size": used_size, "free_size": round(max(0.0, slots - used_size), 2),
+            "ladder": None if lad is None else {k: v for k, v in lad.items() if k != "history"},
             "counts": {"queue": len(queue), "holdings": len(holdings),
+                       "topup": sum(1 for r in rows if r["in_topup"]),
                        "queue_by_source": {board: sum(r["board"] == board for r in queue)
                                            for board in ("main", "sme", "ipo", "bear")},
                        "stop_alerts": sum(1 for r in holdings

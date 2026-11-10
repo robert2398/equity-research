@@ -5,7 +5,7 @@ import {
 import {
   fetchNextBullWatch, fetchDossier, fetchLedger, requestAiNote, requestAiBrief, fmtPct, fmtNum,
 } from '../api.js';
-import { DecideModal, LedgerButton, ledgerEpisode } from '../components/LedgerDecide.jsx';
+import { DecideModal, LadderPill, LedgerButton, SizePill, ladderLine, ledgerEpisode, sizeLabel } from '../components/LedgerDecide.jsx';
 
 const PHASE_CLASS = {
   'EARLY BULL': 'IMPROVING', WASHOUT: 'WEAK_OR_MIXED', 'BROAD BULL': 'CONFIRMED', NEUTRAL: 'UNKNOWN',
@@ -422,7 +422,7 @@ function StockTable({ rows, onOpen, isSignal, aiMeta, notes, busy, onAi, onDossi
     <div className="panel" style={{ overflowX: 'auto', marginTop: 8 }}>
       <table>
         <thead><tr>
-          <th>#</th><th title="Next Bull lab grade: A+ / A = take, B = wait for the bull clock, X = vetoed">Grade</th><th>Symbol</th><th>Close ₹</th><th title="NSE shares outstanding x close">Mcap ₹cr</th><th>RS 6m</th><th>RS 12m</th>
+          <th>#</th><th title="Next Bull lab grade: A+ / A = take, B = wait for the bull clock, X = vetoed · beside it, the position size for today's market ladder rung">Grade · size</th><th>Symbol</th><th>Close ₹</th><th title="NSE shares outstanding x close">Mcap ₹cr</th><th>RS 6m</th><th>RS 12m</th>
           <th>Turnover accel</th><th>Turnover ₹cr</th><th>Thrusts 63d</th><th>Off 3y high</th>
           <th>6M</th>{isSignal && <th title="consecutive sessions the buy signal has held">Signal age</th>}
           <th>Score</th><th>Research</th>
@@ -431,7 +431,7 @@ function StockTable({ rows, onOpen, isSignal, aiMeta, notes, busy, onAi, onDossi
           {rows.map((r, i) => (
             <tr key={r.symbol} onClick={() => onOpen(r.symbol)}>
               <td className="mut">{i + 1}</td>
-              <td><GradePill r={r} /></td>
+              <td style={{ whiteSpace: 'nowrap' }}><GradePill r={r} /> <SizePill r={r} /></td>
               <td>
                 {r.symbol}{' '}
                 {r.tier === 'A' && <span className="pill hi" title="RS rank >= 95">A</span>}{' '}
@@ -588,6 +588,16 @@ export default function NextBullWatch({ onOpen }) {
         (6-month low {(r.breadth_min6m * 100).toFixed(0)}%, {r.recovery_pp >= 0 ? '+' : ''}{r.recovery_pp}pp)
         <div className="small" style={{ fontWeight: 400, marginTop: 4 }}>{r.note}</div>
       </div>
+      {data.ladder && (
+        <div className="panel" style={{ marginBottom: 14 }}>
+          <b>Market ladder</b> <LadderPill ladder={data.ladder} />{' '}
+          <span className="small">{ladderLine(data.ladder)}</span>
+          <div className="small" style={{ marginTop: 4 }}>{data.ladder.note}. Grade A+ / A signals are sized by it, as a
+            share of a full position: washout {sizeLabel(data.ladder.sizes.WASHOUT)} · attempt {sizeLabel(data.ladder.sizes.ATTEMPT)} ·
+            prove it {sizeLabel(data.ladder.sizes['PROVE IT'])} · confirmed {sizeLabel(data.ladder.sizes.CONFIRMED)}.
+            Earlier signals are topped up in the Signal Ledger when the market climbs a rung. The ladder never changes a grade.</div>
+        </div>
+      )}
 
       <div className="grid" style={{ gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)', gap: 12 }}>
         <div className="panel">

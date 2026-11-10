@@ -57,6 +57,20 @@ def _clock_today() -> dict:
         return {"phase": str(c.iloc[-1]), "note": None, "breadth200": None, "source": "computed"}
 
 
+def _ladder_today(as_of: str) -> dict | None:
+    """Market ladder (market_ladder.py) from today's next-bull watch, else computed. Context for
+    the IPO rule unless bear_reversal.yaml lists `ipo` under ladder.apply_to."""
+    try:
+        import market_ladder
+        lad = market_ladder.load()
+        if lad is None or lad.get("as_of") != as_of:
+            lad = market_ladder.today(as_of)
+        return lad
+    except Exception as e:                            # the IPO scan never depends on it
+        print(f"  market ladder skipped: {type(e).__name__}: {e}")
+        return None
+
+
 def _upcoming() -> list[dict]:
     """Issues open or closed but not yet listed, from NSE's cached list."""
     from ipo_data import BOARD_OF, ISSUES
@@ -244,13 +258,20 @@ def run(max_age: int = 300) -> dict:
         print(f"  ipo ledger skipped: {type(e).__name__}: {e}")
     order = ORDER
     rows.sort(key=sort_key)
+    from market_ladder import slim, stage_for
+    ladder = _ladder_today(str(last.date()))
+    size = stage_for("ipo", ladder)                   # None unless the ladder sizes IPO signals
+    for x in rows:
+        if size and x["status"] == "BUY":
+            x.update(size)
     lab = {}
     if L:
         lab = {"runs": L.get("runs"), "as_of": L.get("as_of"), "coverage": L.get("coverage"),
                "by_phase": L.get("by_phase", {}).get("LIST"), "phase_name": L.get("phase_name"),
                "by_clock": L.get("by_clock"), "rules": L.get("rules"),
                "rank_halves": (L.get("rank_tests") or {}).get("halves")}
-    out = {"as_of": str(last.date()), "clock": clk, "tiers": NOTES,
+    out = {"as_of": str(last.date()), "clock": clk, "ladder": slim(ladder), "ladder_sizes_ipo": bool(size),
+           "tiers": NOTES,
            "rule": "first close above every high since listing, ≥ 15 sessions after listing, "
                    "on ≥ 1.5x the 20-day median traded value, within the first year; listing "
                    "gain < 30%; buy signal for 10 sessions",

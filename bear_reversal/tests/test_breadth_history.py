@@ -101,7 +101,8 @@ def test_official_extension_preserves_adjustment_basis_and_chooses_traded_series
                   "TURNOVER_LACS": [1000, 10]}).to_csv(raw / f"{day:%Y-%m-%d}.csv", index=False)
     close, _, metadata = load_inputs(tmp_path)
     assert close.loc[day, "KEY"] == pytest.approx(204)
-    pd.testing.assert_frame_equal(pd.read_parquet(cache / "close.parquet"), original)
+    # the cache on disk is untouched; a parquet round trip does not keep the index frequency
+    pd.testing.assert_frame_equal(pd.read_parquet(cache / "close.parquet"), original, check_freq=False)
     assert metadata["updates"][0]["mapped_rows"] == 1
 
 

@@ -1,10 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { fetchLedger, saveLedgerSettings, fmtNum } from '../api.js';
 import { DossierModal } from './NextBullWatch.jsx';
-import { CommentTime, DecideModal, LedgerGrade, OnList, STATUS_PILL, Tags, signed } from '../components/LedgerDecide.jsx';
+import {
+  CommentTime, DecideModal, LadderPill, LedgerGrade, OnList, STATUS_PILL, Stage, Tags, ladderLine, signed, sizeLabel,
+} from '../components/LedgerDecide.jsx';
 
 const VIEWS = [
   ['queue', 'Queue', (r) => r.in_queue],
+  ['topup', 'Top up', (r) => r.in_topup],
   ['holdings', 'Holdings', (r) => r.status === 'BOUGHT'],
   ['passed', 'Passed', (r) => r.status === 'PASSED'],
   ['exited', 'Exited', (r) => r.status === 'EXITED'],
@@ -15,7 +18,8 @@ const VIEWS = [
   ['all', 'All', () => true],
 ];
 
-function HowTo({ rules }) {
+function HowTo({ rules, ladder }) {
+  const lz = ladder?.sizes || {};
   // Only the priority groups eligible for the queue.
   const groups = [
     ...Object.entries(rules?.priority || {}).map(([k, v]) => ({ p: Number(k), label: v.group, ev: v.evidence })),
@@ -35,10 +39,18 @@ function HowTo({ rules }) {
             main-board names are graded on their first signal, or today while on today&apos;s list ·
             latest comment first, then priority for rows without a timestamp</div>
           <div style={{ marginTop: 3 }}>BR = actionable bear-reversal breakout from Candidates; its own core-score rule applies.</div></div></div>
-      <div className="step"><span className="n">3</span><span className="t">Decide and write why</span>
+      {ladder && (
+        <div className="step"><span className="n">3</span><span className="t">Size by the market ladder</span>
+          <div className="d">Next Bull and SME buys start small and grow as breadth recovers. Share of a full position:
+            washout {sizeLabel(lz.WASHOUT)} · attempt {sizeLabel(lz.ATTEMPT)} · prove it {sizeLabel(lz['PROVE IT'])} ·
+            confirmed {sizeLabel(lz.CONFIRMED)}. When the market climbs a rung, earlier signals appear under <b>Top up</b> for{' '}
+            {ladder.carry_sessions} sessions after their first signal. If the market never confirms, they stay
+            the size they are. Sizes are untested defaults (bear_reversal.yaml).</div></div>
+      )}
+      <div className="step"><span className="n">{ladder ? 4 : 3}</span><span className="t">Decide and write why</span>
         <div className="d">Open the Dossier, apply the vetoes, mark Bought / Passed / Wait with a note. Pass notes
           are the data that will later show whether the fundamental filters help.</div></div>
-      <div className="step buy"><span className="n">4</span><span className="t">Sell only on the trailing stop</span>
+      <div className="step buy"><span className="n">{ladder ? 5 : 4}</span><span className="t">Sell only on the trailing stop</span>
         <div className="d">Exit on a close {Math.round((rules?.trail || 0.5) * 100)}% below the highest close since
           your buy — the lab-tested exit. Don&apos;t swap a holding for a newer name.</div></div>
     </div>
@@ -61,7 +73,12 @@ export default function SignalLedger({ onOpen }) {
 
   const c = data.counts;
   const filter = VIEWS.find(([id]) => id === view)[2];
-  const rows = data.rows.filter(filter);
+  const listed = data.rows.filter(filter);
+  // top-ups: holdings first, then by priority, names still on today's list, newest signal first
+  const rows = view !== 'topup' ? listed : [...listed].sort((a, b) =>
+    (a.ladder_action === 'TOP UP' ? 0 : 1) - (b.ladder_action === 'TOP UP' ? 0 : 1)
+    || a.priority - b.priority || Number(b.on_list_today) - Number(a.on_list_today)
+    || b.first_date.localeCompare(a.first_date));
   const alerts = data.rows.filter((r) => r.status === 'BOUGHT' && r.position?.stop_hit);
   const showPos = view === 'holdings' || view === 'exited';
 
@@ -81,9 +98,14 @@ export default function SignalLedger({ onOpen }) {
         leaves this machine</div>
 
       <div className="grid cards" style={{ marginTop: 12 }}>
+        {data.ladder && (
+          <div className="card"><div className="label">Market ladder</div>
+            <div className="value" style={{ fontSize: 16 }}><LadderPill ladder={data.ladder} /></div>
+            <div className="note">{ladderLine(data.ladder)}</div></div>
+        )}
         <div className="card"><div className="label">Slots</div>
-          <div className="value">{data.used} / {data.slots}</div>
-          <div className="note">{data.free} free ·{' '}
+          <div className="value">{fmtNum(data.used_size ?? data.used, 2).replace(/\.00$/, '')} / {data.slots}</div>
+          <div className="note" title="a pilot or half position takes that share of a slot">{data.used} holdings · {data.free_size ?? data.free} free ·{' '}
             <input className="slot-input" type="number" min="1" max="500" value={slots}
               onChange={(e) => setSlots(e.target.value)} />{' '}
             <button type="button" className="btn xs" onClick={saveSlots}>set</button>
@@ -92,6 +114,11 @@ export default function SignalLedger({ onOpen }) {
           <div className="value">{c.queue}</div>
           <div className="note">first signal age &lt; {data.rules.queue_signal_age} trading sessions</div>
           <div className="note">Bear reversal {c.queue_by_source?.bear || 0} · SME {c.queue_by_source?.sme || 0} · Next Bull {c.queue_by_source?.main || 0} · IPO {c.queue_by_source?.ipo || 0}</div></div>
+        {data.ladder && (
+          <div className="card"><div className="label">Top up</div>
+            <div className={`value ${c.topup ? 'pos' : ''}`}>{c.topup}</div>
+            <div className="note">earlier signals and holdings the market has since moved up a rung for</div></div>
+        )}
         <div className="card"><div className="label">New this week</div>
           <div className="value pos">{c.new_this_week}</div>
           <div className="note">first signal in the last 5 sessions</div></div>
@@ -107,7 +134,7 @@ export default function SignalLedger({ onOpen }) {
       )}
 
       <h2 style={{ marginTop: 18 }}>How to use it</h2>
-      <HowTo rules={data.rules} />
+      <HowTo rules={data.rules} ladder={data.ladder} />
 
       <div style={{ display: 'flex', gap: 6, marginTop: 16, flexWrap: 'wrap' }}>
         {VIEWS.map(([id, label, f]) => (
@@ -117,7 +144,9 @@ export default function SignalLedger({ onOpen }) {
         ))}
       </div>
 
-      <div className="small" style={{ marginTop: 8 }}>Latest comments appear first · rows without comment timestamps follow in priority order.</div>
+      <div className="small" style={{ marginTop: 8 }}>{view === 'topup'
+        ? 'The market has climbed a rung since these fired. Holdings to top up come first, then undecided signals by priority, names still on today\'s list, newest signal first. Failed SME breakouts and signals past the carry window are left out.'
+        : 'Latest comments appear first · rows without comment timestamps follow in priority order.'}</div>
       <div className="panel" style={{ overflowX: 'auto', marginTop: 8 }}>
         {rows.length === 0 ? <div className="empty-ai">nothing here yet</div> : (
           <table>
@@ -125,6 +154,7 @@ export default function SignalLedger({ onOpen }) {
               <th>#</th><th title="P1–P5 for Next Bull / SME / IPO; BR for actionable bear-reversal breakouts">Pri</th><th>Source</th><th>Symbol</th><th>First signal</th>
               <th title="sessions on the list · separate streaks">On list</th><th>Today</th>
               <th>Since signal</th><th>Mcap ₹cr</th><th>Status</th>
+              <th title="position size from the market ladder: what to buy, top up or hold, as a share of a full position">Size</th>
               {showPos && <><th>Buy ₹</th><th>Return</th><th title="exit if a close falls to this">Stop ₹</th></>}
               <th>Comment</th><th title="latest saved comment; newest first">Comment saved ↓</th><th />
             </tr></thead>
@@ -143,6 +173,7 @@ export default function SignalLedger({ onOpen }) {
                     <td className={r.ret_since_signal >= 0 ? 'pos' : 'neg'}>{signed(r.ret_since_signal)}</td>
                     <td>{r.mcap_now != null ? fmtNum(r.mcap_now, 0) : '–'}</td>
                     <td><span className={`pill ${STATUS_PILL[r.shown_status] || 'grey'}`}>{r.shown_status.toLowerCase()}</span></td>
+                    <td style={{ whiteSpace: 'nowrap' }}><Stage r={r} /></td>
                     {showPos && <>
                       <td>{r.buy_price != null ? `${fmtNum(r.buy_price, 1)} · ${r.buy_date}` : '–'}</td>
                       <td className={p.ret >= 0 ? 'pos' : 'neg'}>{signed(p.ret, 1)}</td>

@@ -74,9 +74,9 @@ def clock() -> pd.Series:
     """The next-bull watch's bull-run clock (bagger_lab.Panel.regime_at) on every session:
     WASHOUT / EARLY BULL / BROAD BULL / NEUTRAL from full-market breadth. Point-in-time, so a
     rule gated on it can be used live."""
-    from bagger_data import load
-    from bagger_lab import RECOVERY, WASHOUT_6M, Panel
-    b = Panel(load()).breadth200
+    from bagger_lab import RECOVERY, WASHOUT_6M
+    from market_ladder import breadth200
+    b = breadth200()                                  # the same panel breadth, built once per process
     bmin = b.rolling(126, min_periods=1).min()
     ph = np.select([(bmin < WASHOUT_6M) & (b - bmin >= RECOVERY), bmin < WASHOUT_6M, b >= 0.70],
                    ["EARLY BULL", "WASHOUT", "BROAD BULL"], "NEUTRAL")

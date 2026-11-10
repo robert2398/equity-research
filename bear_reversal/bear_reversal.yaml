@@ -121,6 +121,23 @@ shortlist:                     # plan section 5 selective output
   corr_min_obs: 50
   sector_min_names: 10         # fewer -> no sector score component (coverage note)
 
+ladder:                        # market ladder (market_ladder.py, docs/SCAN_AUDIT_2026-11-10.md): sizes
+                               # the signals the scans already call a buy; it never creates one
+  window: 189                  # sessions (~9 months) after a washout that a recovery counts as young
+  washout: 0.35                # share of stocks above their 200-DMA under this starts a cycle
+  recovery: 0.10               # ATTEMPT = 10 points off the window low, still under prove_it
+  prove_it: 0.45               # PROVE IT = 45-60% (the 2025 and 2026 rallies stalled at 53-54%)
+  confirmed: 0.60              # CONFIRMED = 60%+ (never reached in 2018, 2019, 2025, 2026)
+  mature: 0.70                 # MATURE BULL = 70%+ with no washout in the window: no new positions
+  size:                        # fraction of a full position; UNTESTED defaults, tune to taste
+    washout: 0.25              # pilot
+    attempt: 0.25              # pilot
+    prove_it: 0.50             # top up to half
+    confirmed: 1.0             # top up to full
+  carry_sessions: 126          # an unconfirmed signal is topped up for this long, then left alone
+  apply_to: [main, sme]        # Next Bull and SME BUY; add ipo to size IPO signals too (the IPO
+                               # rule was not regime-sensitive in the audit, so it is context only)
+
 ai_notes:                      # ON-DEMAND LLM research notes (ai_notes.py): only when the user
                                # clicks Research on a Next Bull row; the daily run never calls it
   enabled: true                # needs OPENROUTER_API_KEY in .env
