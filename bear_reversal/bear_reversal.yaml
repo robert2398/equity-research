@@ -134,6 +134,13 @@ ladder:                        # market ladder (market_ladder.py, docs/SCAN_AUDI
     attempt: 0.25              # pilot
     prove_it: 0.50             # top up to half
     confirmed: 1.0             # top up to full
+  veto:                        # Next Bull names with a hard veto (grade X)
+    rungs: [prove_it, confirmed]   # a skip below these rungs; on them, taken at a reduced size
+    factor: 0.5                # share of the rung's size: prove it 1/4, confirmed 1/2
+    max_vetoes: 1              # names with more hard vetoes stay a skip (21 trades, none reached 5x)
+                               # why: in these rungs, 2020-24, grade X was 16 of the 34 trades that
+                               # reached 5x and 5 of the 7 that reached 10x (audit section 10.2);
+                               # only 8 such trades exist before 2020, so the early years cannot confirm it
   carry_sessions: 126          # an unconfirmed signal is topped up for this long, then left alone
   apply_to: [main, sme]        # Next Bull and SME BUY; add ipo to size IPO signals too (the IPO
                                # rule was not regime-sensitive in the audit, so it is context only)

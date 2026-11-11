@@ -5,7 +5,8 @@ Why: the daily signal list flickers (median streak 3 sessions, 68% of names come
 not the day. An episode starts on the first signal after 60 quiet sessions and stays LIVE
 for 60 sessions after its last signal.
 
-Queue: undecided P1-P5 episodes and BR actionable breakouts aged 0-4 trading sessions. Most recently
+Queue: new P1-P5 episodes and BR actionable breakouts aged 0-4 trading sessions, plus all
+WAIT / RESEARCHING decisions until resolved, regardless of age or scanner eligibility. Most recently
 commented first, then priority: P1 grade A+, P2 grade A, P3 IPO A, P4 SME BUY, P5 IPO B.
 Other views retain older episodes, P6 grade B and P7 grade X. Comments keep a timestamped history.
 
@@ -74,7 +75,8 @@ BACKFILL = 260      # episodes that started within the last ~year are listed
 TRAIL = 0.50        # exit: close 50% below the highest close since entry (bagger lab)
 DEFAULT_SLOTS = 20
 STATUSES = ("NEW", "RESEARCHING", "WAIT", "BOUGHT", "PASSED", "EXITED")
-OPEN = ("NEW", "RESEARCHING", "WAIT")
+PENDING = ("RESEARCHING", "WAIT")
+OPEN = ("NEW", *PENDING)
 QUEUE_MAX_PRIORITY = 5
 QUEUE_SIGNAL_AGE = 5   # first signal today is age 0; ages 0-4 qualify
 # Main-board episodes queue by their Next Bull grade (nextbull_lab.grade). Evidence: every signal
@@ -90,6 +92,13 @@ UNGRADED = 6         # grade could not be computed: wait, like B
 IPO_PRIORITY = {"A": 3, "B": 5}
 SME_PRIORITY = 4
 BEAR_PRIORITY = 5   # sorting bucket; displayed as BR, independent of Next Bull grades
+# A grade X name is P7 (skip). Once the market ladder is in prove it / confirmed, a name with one
+# hard veto is taken at a reduced size instead (market_ladder `veto`), and queues here.
+VETO_PRIORITY = 5
+VETO_RULE = {"priority": VETO_PRIORITY,
+             "group": "grade X with one hard veto, once the market is in prove it / confirmed (reduced size)",
+             "evidence": "median +47% · 58% doubled in 2y · 16 of the 34 trades that reached 5x "
+                         "(146 trades, 2020-24, in those rungs; only 8 trades before 2020)"}
 BEAR_RULE = {"label": "BR", "group": "Bear-reversal actionable breakouts from Candidates"}
 SME_RULE = {"priority": SME_PRIORITY,
             "group": "SME BUY: breakout to a 1-year high on ≥ 1.5x volume, listed > 1 year, clock washout / early bull",
@@ -192,7 +201,7 @@ def _grade_episodes(panel, eps: list[dict], first: int, i: int) -> None:
     today's session while the name is on today's list, else on its first signal (the session
     the lab graded). Fundamentals come from the JSON store as known on that day."""
     import pandas as pd
-    from nextbull_lab import fund_features, grade
+    from nextbull_lab import HARD_VETOES, fund_features, grade
     at = {e["id"]: i if e["on_list_today"] else e["start"] + first for e in eps}
     parts = []
     for k in sorted(set(at.values())):
@@ -208,6 +217,7 @@ def _grade_episodes(panel, eps: list[dict], first: int, i: int) -> None:
     by = {e["id"]: e for e in eps}
     for r, g in zip(F.itertuples(), G.itertuples()):
         by[r.id].update(grade=g.grade, vetoes=g.vetoes, boosters=g.boosters,
+                        n_hard_vetoes=sum(v in HARD_VETOES for v in g.vetoes),
                         grade_date=str(r.date.date()), grade_clock=r.clock, has_fund=bool(r.has_fund))
 
 
@@ -582,9 +592,31 @@ def _load_ladder() -> dict | None:
         return None
 
 
+def _hard_vetoes(ep: dict) -> int:
+    """How many hard vetoes a graded episode carries (older market files only list their names)."""
+    if ep.get("n_hard_vetoes") is not None:
+        return int(ep["n_hard_vetoes"])
+    try:
+        from nextbull_lab import HARD_VETOES
+        return sum(v in HARD_VETOES for v in ep.get("vetoes") or [])
+    except Exception:
+        return 99                                     # unknown: never waived
+
+
+def _veto_waived(lad: dict | None, ep: dict, board: str) -> int | None:
+    """The episode's hard-veto count when the ladder takes it despite the veto today: a grade X
+    Next Bull name with few enough vetoes, while the market is on a rung that sizes them."""
+    if not lad or board != "main" or ep.get("grade") != "X" or board not in lad.get("apply_to", []):
+        return None
+    from market_ladder import veto_size
+    n = _hard_vetoes(ep)
+    return n if veto_size(lad, lad["state"], n) > 0 else None
+
+
 def _ladder_fields(lad: dict | None, ep: dict, ue: dict, board: str, pri: int, age: int,
-                   status: str, shown: str, in_queue: bool) -> dict:
+                   status: str, shown: str, in_queue: bool, n_vetoes: int | None = None) -> dict:
     """Position size for one episode under the market ladder (market_ladder.py).
+    `n_vetoes` = the hard-veto count of a grade X name the ladder waives (reduced sizes).
 
     The ladder sizes buyable signals (P1-P5) of the boards it applies to: the rung the market
     was on when the signal fired, the rung today, and what to do about the difference.
@@ -600,12 +632,15 @@ def _ladder_fields(lad: dict | None, ep: dict, ue: dict, board: str, pri: int, a
     out = {"size_held": float(ue.get("size") or 1.0) if held else None, "in_topup": False}
     if not lad or board not in lad.get("apply_to", []) or pri > QUEUE_MAX_PRIORITY:
         return out
-    from market_ladder import CYCLE, states_since
+    from market_ladder import CYCLE, label, states_since, veto_size
     states = states_since(lad, ep["first_date"])
     if not states:
         return out
     s0, s1 = states[0], states[-1]
-    z0, z1 = float(lad["sizes"].get(s0, 0)), float(lad["sizes"].get(s1, 0))
+    if n_vetoes is None:
+        z0, z1 = float(lad["sizes"].get(s0, 0)), float(lad["sizes"].get(s1, 0))
+    else:                                             # a waived veto: nothing on the low rungs
+        z0, z1 = veto_size(lad, s0, n_vetoes), veto_size(lad, s1, n_vetoes)
     out.update(ladder_first=s0, ladder_now=s1, size_first=z0, size_now=z1)
     if not held and shown not in OPEN:
         return out
@@ -630,7 +665,7 @@ def _ladder_fields(lad: dict | None, ep: dict, ue: dict, board: str, pri: int, a
     elif z1 > z0 + 1e-9:
         action, target = "PROMOTED", z1
     elif in_queue or ep.get("on_list_today"):
-        action, target = lad["stages"].get(s1, "WATCH"), z1
+        action, target = label(z1, s1), z1
     else:
         action, target = "WATCH", None
     out.update(ladder_action=action, size_target=target, in_topup=action in ("TOP UP", "PROMOTED"),
@@ -679,15 +714,21 @@ def view() -> dict:
             board = ep.get("board", "main")
             ue = u["entries"].get(ep["id"], {})
             status = ue.get("status", "NEW")
-            shown = "EXPIRED" if status in OPEN and not ep["live"] else status
+            shown = "EXPIRED" if status == "NEW" and not ep["live"] else status
             a = ep["tier_a_now"] if ep["on_list_today"] else ep["first_tier_a"]
             sm = ep["small_now"] if ep["on_list_today"] else ep["first_small"]
             close = [x for x in ep["close"] if x is not None]
             row = {k: v for k, v in ep.items() if k not in ("close", "raw", "start")}
             pri = _priority(ep)
+            waived = _veto_waived(lad, ep, board)     # grade X the ladder takes today, smaller
+            if waived is not None:
+                pri = VETO_PRIORITY
             age = len(source_sessions) - bisect_right(source_sessions, ep["first_date"])
             fresh = 0 <= age < QUEUE_SIGNAL_AGE and ep["first_date"] <= source_sessions[-1]
-            in_queue = shown in OPEN and pri <= QUEUE_MAX_PRIORITY and fresh and ep.get("queue_current", True)
+            # A deliberate follow-up stays queued until the user resolves it, even after
+            # the signal ages, drops off its scanner, or no longer passes the grade filter.
+            in_queue = status in PENDING or (
+                shown == "NEW" and pri <= QUEUE_MAX_PRIORITY and fresh and ep.get("queue_current", True))
             comments = _comments(ue)
             row.update(board=board, sme=board == "sme", status=status, shown_status=shown,
                        source_label={"main": "Next Bull", "sme": "SME buy", "ipo": "IPO", "bear": "Bear reversal"}[board],
@@ -701,7 +742,8 @@ def view() -> dict:
                        last_price=next((x for x in reversed(ep["raw"]) if x is not None), None),
                        ret_since_signal=_r(close[-1] / close[0] - 1, 4) if close else None,
                        new_this_week=fresh)
-            row.update(_ladder_fields(lad, ep, ue, board, pri, age, status, shown, in_queue))
+            row.update(_ladder_fields(lad, ep, ue, board, pri, age, status, shown, in_queue, waived),
+                       veto_waived=waived is not None)
             if ue.get("tranches"):
                 row["tranches"] = ue["tranches"]
             if status in ("BOUGHT", "EXITED"):
@@ -721,6 +763,8 @@ def view() -> dict:
     # a pilot or half position takes that share of a slot
     used_size = round(sum(r["size_held"] or 1.0 for r in holdings), 2)
     rules = dict(m.get("rules") or {"quiet": QUIET, "live": LIVE, "trail": TRAIL})
+    if lad and any(float(z) > 0 for z in lad.get("veto_sizes", {}).values()):
+        rules["veto"] = VETO_RULE
     rules.update(sme=SME_RULE, ipo=IPO_RULE, bear=BEAR_RULE,
                  queue_max_priority=QUEUE_MAX_PRIORITY, queue_signal_age=QUEUE_SIGNAL_AGE,
                  priority={str(k): {"group": g, "evidence": h} for k, (g, h) in PRIORITY.items()})

@@ -7,6 +7,8 @@ import {
 
 const VIEWS = [
   ['queue', 'Queue', (r) => r.in_queue],
+  ['wait', 'Wait', (r) => r.status === 'WAIT'],
+  ['researching', 'Researching', (r) => r.status === 'RESEARCHING'],
   ['topup', 'Top up', (r) => r.in_topup],
   ['holdings', 'Holdings', (r) => r.status === 'BOUGHT'],
   ['passed', 'Passed', (r) => r.status === 'PASSED'],
@@ -25,16 +27,19 @@ function HowTo({ rules, ladder }) {
     ...Object.entries(rules?.priority || {}).map(([k, v]) => ({ p: Number(k), label: v.group, ev: v.evidence })),
     ...Object.entries(rules?.ipo || {}).map(([t, v]) => ({ p: v.priority, tag: <span className="pill green">IPO {t}</span>, label: v.group, ev: v.hit2x })),
     ...(rules?.sme ? [{ p: rules.sme.priority, tag: <span className="pill amber">SME</span>, label: rules.sme.group, ev: rules.sme.hit2x, tip: rules.sme.note }] : []),
+    ...(rules?.veto ? [{ p: rules.veto.priority, tag: <span className="pill red">X</span>, label: rules.veto.group, ev: rules.veto.evidence }] : []),
   ].filter((g) => g.p <= rules.queue_max_priority).sort((a, b) => a.p - b.p);
   return (
     <div className="steps">
       <div className="step"><span className="n">1</span><span className="t">Review fresh signals</span>
         <div className="d">The queue combines actionable bear-reversal breakouts with P1–P{rules.queue_max_priority} Next Bull, SME buy and IPO signals fewer than{' '}
           {rules.queue_signal_age} trading sessions old (age 0–{rules.queue_signal_age - 1}).
-          Age is measured from the first signal to the latest data session.</div></div>
+          Age is measured from the first signal to the latest data session. Wait and Researching entries
+          stay in Queue regardless of age, grade or whether they remain on the scanner, until you mark
+          them Passed, Bought or Exited. Each also has its own tab.</div></div>
       <div className="step"><span className="n">2</span><span className="t">Fill free slots in priority order</span>
         <div className="d">{groups.map((g) => (
-          <div key={g.p} style={{ marginTop: 3 }} title={g.tip}>P{g.p} {g.tag} {g.label} — {g.ev}</div>))}
+          <div key={`${g.p}-${g.label}`} style={{ marginTop: 3 }} title={g.tip}>P{g.p} {g.tag} {g.label} — {g.ev}</div>))}
           <div style={{ marginTop: 3 }}>(every signal 2016–24, bought at the signal close, 50% trailing stop or 2 years) ·
             main-board names are graded on their first signal, or today while on today&apos;s list ·
             latest comment first, then priority for rows without a timestamp</div>
@@ -112,7 +117,7 @@ export default function SignalLedger({ onOpen }) {
             {slotErr && <span className="neg"> {slotErr}</span>}</div></div>
         <div className="card"><div className="label">Queue</div>
           <div className="value">{c.queue}</div>
-          <div className="note">first signal age &lt; {data.rules.queue_signal_age} trading sessions</div>
+          <div className="note">new signals &lt; {data.rules.queue_signal_age} sessions old + all Wait / Researching entries</div>
           <div className="note">Bear reversal {c.queue_by_source?.bear || 0} · SME {c.queue_by_source?.sme || 0} · Next Bull {c.queue_by_source?.main || 0} · IPO {c.queue_by_source?.ipo || 0}</div></div>
         {data.ladder && (
           <div className="card"><div className="label">Top up</div>
@@ -202,7 +207,8 @@ export default function SignalLedger({ onOpen }) {
         (breakout to a 1-year high on 1.5x volume, listed over a year, clock washout / early bull; &quot;on list&quot; = within
         10 sessions of the breakout) and have no market cap · IPO episodes are breakouts that passed
         the IPO lab&apos;s rule on their signal day (IPO Watch tab); &quot;on list&quot; = within the 10-session buy window · expired = left the list over {data.rules.live}{' '}
-        sessions ago with no decision · prices are as quoted; returns and stops use split-adjusted closes
+        sessions ago with status New; Wait and Researching stay queued until you mark them Passed, Bought or Exited
+        · prices are as quoted; returns and stops use split-adjusted closes
       </div>
 
       {edit && <DecideModal row={edit} asOf={data.as_of} onClose={() => setEdit(null)}

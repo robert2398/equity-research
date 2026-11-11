@@ -78,7 +78,7 @@ delisted before 2024 have no cap, so these comparisons are made on the known-cap
 
 - **Daily run** (via `next_bull_watch.run`): refreshes `ui_data/signal_ledger_market.json` with every episode of the last year, its A/S tags, and closes since the first signal.
 - **Your decisions** live only in `state/signal_ledger.json`, written by the UI and never touched by the daily run. For each episode: status (new/researching/wait/bought/passed/exited), note, buy and exit price/date, plus your slot count.
-- **Queue:** live, undecided P1–P5 Next Bull / SME / IPO signals plus actionable bear-reversal breakouts (labelled BR), with a first signal aged 0–4 sessions on the source scanner's calendar. Newer market sessions still age a stale snapshot. Each SME breakout has its own first-signal date; only the current buy window enters the queue. The queue card shows counts by source. P6/P7 and older signals remain in the other views.
+- **Queue:** new, live P1–P5 Next Bull / SME / IPO signals plus actionable bear-reversal breakouts (labelled BR), with a first signal aged 0–4 sessions on the source scanner's calendar. Newer market sessions still age a stale snapshot. Each SME breakout has its own first-signal date; only the current buy window automatically enters the queue. **Wait and Researching decisions always stay in Queue until marked Passed, Bought or Exited**, regardless of age, grade or scanner eligibility, and have separate Wait and Researching tabs. Only New entries can expire automatically. The queue card shows counts by source. Other P6/P7 and older signals remain in the other views.
 - **Comments:** saving a new comment records a UTC timestamp and preserves earlier comments. Comments and ledger rows show the most recent comment first; undated rows follow in priority order. Legacy comments with a recorded buy date have been backfilled with that date and display “buy date” without a time. Comments without a buy date remain undated. The comment editor has a full-screen toggle (Escape restores its normal size), and displays recorded timestamps in the browser's local timezone.
 - **The tab shows:**
   - the fresh-signal queue, newest comment first, then priority: P1 Next Bull grade A+, P2 grade A, P3 IPO A, P4 SME BUY, P5 IPO B. P6 grade B (clock not ready) and P7 grade X (hard veto) remain in other views. A main-board episode is graded on its first signal, or on today's session while it is on today's list, with the fundamentals known that day; `?` on the grade = no fundamentals on file, so the fundamental vetoes were not checked. The small-cap / RS ≥ 95 tags are shown but no longer set the priority;
@@ -300,6 +300,12 @@ far breadth (share of stocks above their 200-DMA) has recovered:
 - **Recording a top-up** (Decide pop-up): pick the new size and the top-up price; it is averaged
   into the buy price by size and each tranche is kept. A pilot uses a quarter of a slot. Holdings
   bought before the ladder count as full positions.
+- **Vetoed names are sized once the market has proved itself** (11 Nov 2026). A grade X name is
+  still a skip in a washout or attempt. In prove it / confirmed, a name with one hard veto is taken
+  at half the rung's size (¼ / ½) and queues at P5; two or more vetoes stay a skip. In those
+  rungs, 2020-24, grade X made a median +47% with 58% doubling (146 trades) and was 16 of the 34
+  trades that reached 5x and 5 of the 7 that reached 10x. Only 8 such trades exist before 2020
+  (median −30%). Settings: `ladder.veto` in `bear_reversal.yaml`.
 - **IPO signals are not sized** by default: the IPO rule was not regime-sensitive in the audit.
   Add `ipo` to `ladder.apply_to` in `bear_reversal.yaml` to size them too.
 - **The sizes are untested defaults** (`ladder.size`), and the ladder rests on three or four real

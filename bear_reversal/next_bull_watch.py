@@ -25,6 +25,8 @@ Outputs (all watch/research — no orders):
   ladder   market_ladder.py: the rung the recovery has reached (washout / attempt / prove it /
            confirmed) and the position size for it. Grade A+ / A signals carry stage and size;
            the ladder never changes a grade. Top-ups of earlier signals are in the signal ledger.
+           Grade X names with one hard veto are also sized (smaller, veto_waived) once the market
+           is in prove it / confirmed: there they held about half of the eventual 5x winners.
 """
 from __future__ import annotations
 
@@ -191,11 +193,15 @@ def run(max_names: int = 40) -> dict:
         print(f"signal ledger skipped: {type(e).__name__}: {e}")
     signals = _rows(feats[sig], held, graded)[:max_names]
     warm = _rows(feats[warming(feats)], None, graded)[:max_names]
-    if ladder is not None:                            # size the names the grade calls a take
+    if ladder is not None:                            # size the names the grade calls a take, and
+        from nextbull_lab import HARD_VETOES          # one-veto names once the market has proved itself
         size = market_ladder.stage_for("main", ladder)
         for r in signals:
             if size and r.get("grade") in ("A+", "A"):
                 r.update(size)
+            elif r.get("grade") == "X":
+                n_hard = sum(v in HARD_VETOES for v in r.get("vetoes") or [])
+                r.update(market_ladder.stage_for("main", ladder, vetoed=True, n_vetoes=n_hard) or {})
 
     # research-dossier facts for every listed name (no LLM; research_dossier.py)
     from research_dossier import facts

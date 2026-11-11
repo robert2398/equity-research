@@ -40,7 +40,7 @@ export function ladderLine(ladder) {
 export function SizePill({ r }) {
   if (!r.stage) return null;
   return <span className={`pill ${ACTION_PILL[r.stage] || 'grey'}`}
-    title={`market ladder ${r.ladder_state}: ${r.stage === 'WATCH' ? 'no new position' : `buy ${sizeLabel(r.size)} of a full position`} — earlier signals are topped up as the market climbs (Signal Ledger)`}>
+    title={`market ladder ${r.ladder_state}: ${r.stage === 'WATCH' ? 'no new position' : `buy ${sizeLabel(r.size)} of a full position`}${r.veto_waived ? ' · one hard veto, waived on this rung at a reduced size: in prove it / confirmed, vetoed names were about half of the eventual 5x winners' : ''} — earlier signals are topped up as the market climbs (Signal Ledger)`}>
     {r.stage.toLowerCase()}{r.size > 0 && ` ${sizeLabel(r.size)}`}</span>;
 }
 
@@ -54,6 +54,7 @@ export function Stage({ r }) {
         : a === 'WATCH' || a === 'LAPSED' ? a.toLowerCase() : `${a.toLowerCase()} ${sizeLabel(r.size_target)}`;
   const tip = [
     `market ladder: ${r.ladder_first} when the signal fired, ${r.ladder_now} today`,
+    r.veto_waived ? 'hard veto waived on this rung: reduced size' : null,
     a === 'PROMOTED' ? `the market has climbed since this signal: buy ${sizeLabel(r.size_target)} of a full position` : null,
     a === 'TOP UP' ? `you hold ${sizeLabel(r.size_held)}; today's rung allows ${sizeLabel(r.size_target)}` : null,
     a === 'WATCH' ? 'off today\'s list and the market has not climbed: nothing to do' : null,

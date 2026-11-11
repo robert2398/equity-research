@@ -595,7 +595,10 @@ export default function NextBullWatch({ onOpen }) {
           <div className="small" style={{ marginTop: 4 }}>{data.ladder.note}. Grade A+ / A signals are sized by it, as a
             share of a full position: washout {sizeLabel(data.ladder.sizes.WASHOUT)} · attempt {sizeLabel(data.ladder.sizes.ATTEMPT)} ·
             prove it {sizeLabel(data.ladder.sizes['PROVE IT'])} · confirmed {sizeLabel(data.ladder.sizes.CONFIRMED)}.
-            Earlier signals are topped up in the Signal Ledger when the market climbs a rung. The ladder never changes a grade.</div>
+            Earlier signals are topped up in the Signal Ledger when the market climbs a rung. The ladder never changes a grade.
+            {data.ladder.veto_sizes && <> Grade X names with {data.ladder.veto.max_vetoes === 1 ? 'one hard veto' : `up to ${data.ladder.veto.max_vetoes} hard vetoes`} stay
+              a skip below prove it, then are taken smaller: prove it {sizeLabel(data.ladder.veto_sizes['PROVE IT'])} · confirmed{' '}
+              {sizeLabel(data.ladder.veto_sizes.CONFIRMED)}. In those rungs they were 16 of the 34 trades that reached 5x (2020-24).</>}</div>
         </div>
       )}
 

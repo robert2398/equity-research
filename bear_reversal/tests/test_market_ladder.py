@@ -49,6 +49,20 @@ def test_stage_labels_and_sizes():
     assert ml.stage("WASHOUT", off) == ("WATCH", 0.0)   # a size of zero means watch only
 
 
+def test_vetoed_names_are_sized_only_once_the_market_has_proved_itself():
+    assert [ml.stage(s, CFG, vetoed=True) for s in ml.STATES] == [
+        ("WATCH", 0.0), ("WATCH", 0.0), ("PILOT", 0.25), ("ADD", 0.5), ("WATCH", 0.0), ("WATCH", 0.0)]
+    low = ml.summary(_frame([0.50, 0.30, 0.25, 0.36]), CFG)                 # ATTEMPT
+    high = ml.summary(_frame([0.30, 0.50, 0.65, 0.62]), CFG)                # CONFIRMED
+    assert ml.stage_for("main", low, vetoed=True) is None                   # still a skip
+    assert ml.stage_for("main", high, vetoed=True) == {
+        "stage": "ADD", "size": 0.5, "ladder_state": "CONFIRMED", "veto_waived": True}
+    assert ml.stage_for("main", high, vetoed=True, n_vetoes=2) is None      # two hard vetoes: a skip
+    assert ml.stage_for("sme", high, vetoed=True) is not None and ml.stage_for("ipo", high, vetoed=True) is None
+    assert ml.veto_size(high, "PROVE IT", 1) == 0.25 and ml.veto_size(high, "ATTEMPT", 1) == 0.0
+    assert ml.veto_size(None, "CONFIRMED", 1) == 0.0
+
+
 def test_summary_says_what_the_next_rung_needs():
     lad = ml.summary(_frame([0.50, 0.30, 0.25, 0.36]), CFG)
     assert (lad["state"], lad["stage"], lad["size"]) == ("ATTEMPT", "PILOT", 0.25)
@@ -72,8 +86,17 @@ def test_config_reads_the_yaml_block(tmp_path, monkeypatch):
     cfg = ml.config()
     assert cfg["confirmed"] == 0.55 and cfg["size"]["PROVE IT"] == 0.75 and cfg["size"]["WASHOUT"] == 0.25
     assert cfg["apply_to"] == ["main", "sme", "ipo"]
+    assert cfg["veto"] == {"rungs": ["PROVE IT", "CONFIRMED"], "factor": 0.5, "max_vetoes": 1}
+    (tmp_path / "bear_reversal.yaml").write_text(
+        "ladder:\n  veto: {rungs: [confirmed], factor: 1, max_vetoes: 2}\n", encoding="utf-8")
+    cfg = ml.config()
+    assert cfg["veto"] == {"rungs": ["CONFIRMED"], "factor": 1.0, "max_vetoes": 2}
+    assert ml.stage("PROVE IT", cfg, vetoed=True) == ("WATCH", 0.0) and ml.stage("CONFIRMED", cfg, vetoed=True) == ("FULL", 1.0)
     (tmp_path / "bear_reversal.yaml").write_text("ladder:\n  size: {nonsense: 1}\n", encoding="utf-8")
     with pytest.raises(ValueError, match="unknown state"):
+        ml.config()
+    (tmp_path / "bear_reversal.yaml").write_text("ladder:\n  veto: {factor: 2}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="veto.factor"):
         ml.config()
 
 
@@ -112,6 +135,7 @@ def ledger(tmp_path, monkeypatch):
         lad = {"as_of": dates[-1], "state": states[-1], "apply_to": ["main", "sme"], "carry_sessions": carry,
                "sizes": {s: ml.stage(s, CFG)[1] for s in ml.STATES},
                "stages": {s: ml.stage(s, CFG)[0] for s in ml.STATES},
+               "veto_sizes": {s: ml.stage(s, CFG, vetoed=True)[1] for s in ml.STATES}, "veto": dict(CFG["veto"]),
                "history": {"dates": dates, "state": states}}
         sl.LADDER.write_text(json.dumps(lad))
 
@@ -120,10 +144,12 @@ def ledger(tmp_path, monkeypatch):
 
 def test_signal_is_sized_by_todays_rung_and_promoted_when_the_market_climbs(ledger):
     episode, write, dates = ledger
-    eps = [episode("OLD", dates[0]), episode("FRESH", dates[-2]), episode("VETO", dates[-2], grade="X"),
+    eps = [episode("OLD", dates[0]), episode("FRESH", dates[-2]),
+           episode("VETO", dates[-2], grade="X", n_hard_vetoes=1), episode("VETO2", dates[-2], grade="X", n_hard_vetoes=2),
            episode("IPO.X", dates[-2], board="ipo", ipo_tier="A"), episode("GONE", dates[0], on_list_today=False)]
     write(eps, ["WASHOUT"] * 12)
     by = {r["symbol"]: r for r in sl.view()["rows"]}
+    assert (by["VETO"]["priority"], by["VETO"]["in_queue"], by["VETO"]["veto_waived"]) == (7, False, False)
     assert (by["FRESH"]["ladder_action"], by["FRESH"]["size_target"]) == ("PILOT", 0.25)
     assert by["FRESH"]["in_queue"] and not by["FRESH"]["in_topup"]
     assert by["OLD"]["ladder_action"] == "PILOT"            # older, but still on today's list
@@ -137,7 +163,16 @@ def test_signal_is_sized_by_todays_rung_and_promoted_when_the_market_climbs(ledg
     for sym in ("OLD", "FRESH", "GONE"):
         assert (by[sym]["ladder_action"], by[sym]["size_target"], by[sym]["in_topup"]) == ("PROMOTED", 1.0, True)
     assert (by["FRESH"]["ladder_first"], by["FRESH"]["ladder_now"]) == ("PROVE IT", "CONFIRMED")
-    assert v["counts"]["topup"] == 3 and v["ladder"]["state"] == "CONFIRMED" and "history" not in v["ladder"]
+    # a one-veto name is no longer a skip up here: queued at P5 and taken at half the rung's size
+    veto = by["VETO"]
+    assert (veto["priority"], veto["priority_label"], veto["in_queue"], veto["veto_waived"]) == (5, "P5", True, True)
+    assert (veto["size_first"], veto["size_now"], veto["ladder_action"], veto["size_target"]) == (0.25, 0.5, "PROMOTED", 0.5)
+    assert (by["VETO2"]["priority"], by["VETO2"]["in_queue"]) == (7, False) and "ladder_action" not in by["VETO2"]
+    assert v["counts"]["topup"] == 4 and v["ladder"]["state"] == "CONFIRMED" and "history" not in v["ladder"]
+    assert v["rules"]["veto"]["priority"] == 5
+    # back on a low rung the veto stands again
+    write(eps, ["WASHOUT"] * 10 + ["PROVE IT", "ATTEMPT"])
+    assert next(r for r in sl.view()["rows"] if r["symbol"] == "VETO")["priority"] == 7
 
 
 def test_a_signal_lapses_when_confirmation_never_comes(ledger):

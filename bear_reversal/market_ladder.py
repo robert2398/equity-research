@@ -25,6 +25,12 @@ defaults, set in bear_reversal.yaml under `ladder:`. By default the ladder sizes
 SME BUY signals; the IPO rule was not regime-sensitive in the audit, so it is shown there as
 context only (`apply_to`).
 
+Hard-vetoed Next Bull names (grade X) stay a skip on the low rungs. In PROVE IT and CONFIRMED a
+name with one hard veto is taken at half the rung's size (`veto`). There, in 2020-24, grade X made
+a median +47% with 58% doubling (146 trades) and was 16 of the 34 trades that reached 5x and 5 of
+the 7 that reached 10x. Names with two or more hard vetoes stay a skip (21 trades, none reached
+5x). Only 8 such trades exist before 2020 (median -30%), so the early years cannot confirm it.
+
     python bear_reversal/market_ladder.py      # print today's rung and write ui_data/market_ladder.json
 """
 from __future__ import annotations
@@ -56,6 +62,10 @@ DEFAULTS = {
     "size": {"WASHOUT": 0.25, "ATTEMPT": 0.25, "PROVE IT": 0.50, "CONFIRMED": 1.0},
     "carry_sessions": 126,            # an unconfirmed signal is topped up for this long, then left
     "apply_to": ["main", "sme"],      # ledger boards the ladder sizes (add "ipo" to size IPO signals)
+    # Next Bull names with a hard veto (grade X): skipped on the low rungs, taken at `factor` of
+    # the rung's size on `rungs` when they carry at most `max_vetoes` hard vetoes. Audit section
+    # 10.2: in prove it / confirmed, 2020-24, they were 16 of the 34 trades that reached 5x.
+    "veto": {"rungs": ["PROVE IT", "CONFIRMED"], "factor": 0.5, "max_vetoes": 1},
 }
 NOTE = {
     "WASHOUT": "sold out and not yet turning: pilot size only. The same state paid most in 2020 and "
@@ -79,7 +89,9 @@ def _key(state: str) -> str:
 def config() -> dict:
     """Defaults overridden by the `ladder:` block of bear_reversal.yaml (sizes by state name,
     e.g. `size: {prove_it: 0.5}`)."""
-    cfg = {**DEFAULTS, "size": dict(DEFAULTS["size"]), "apply_to": list(DEFAULTS["apply_to"])}
+    cfg = {**DEFAULTS, "size": dict(DEFAULTS["size"]), "apply_to": list(DEFAULTS["apply_to"]),
+           "veto": {**DEFAULTS["veto"], "rungs": list(DEFAULTS["veto"]["rungs"])}}
+    by_key = {_key(s): s for s in CYCLE}
     try:
         import yaml
         with (HERE / "bear_reversal.yaml").open(encoding="utf-8") as fh:
@@ -88,17 +100,29 @@ def config() -> dict:
         user = {}
     for k, v in user.items():
         if k == "size":
-            by_key = {_key(s): s for s in CYCLE}
             for name, frac in (v or {}).items():
                 state = by_key.get(_key(str(name)))
                 if state is None:
                     raise ValueError(f"ladder.size: unknown state {name!r}")
                 cfg["size"][state] = float(frac)
+        elif k == "veto":
+            v = v or {}
+            if "rungs" in v:
+                rungs = [by_key.get(_key(str(name))) for name in (v["rungs"] or [])]
+                if None in rungs:
+                    raise ValueError(f"ladder.veto.rungs: unknown state in {v['rungs']!r}")
+                cfg["veto"]["rungs"] = rungs
+            if "factor" in v:
+                cfg["veto"]["factor"] = float(v["factor"])
+            if "max_vetoes" in v:
+                cfg["veto"]["max_vetoes"] = int(v["max_vetoes"])
         elif k in cfg:
             cfg[k] = list(v) if k == "apply_to" else type(DEFAULTS[k])(v)
     for state, frac in cfg["size"].items():
         if not 0 <= frac <= 1:
             raise ValueError(f"ladder.size for {state} must be between 0 and 1")
+    if not 0 <= cfg["veto"]["factor"] <= 1:
+        raise ValueError("ladder.veto.factor must be between 0 and 1")
     return cfg
 
 
@@ -122,22 +146,46 @@ def frame(breadth200: pd.Series, cfg: dict | None = None) -> pd.DataFrame:
     return out
 
 
-def stage(state: str, cfg: dict | None = None) -> tuple[str, float]:
-    """(label, size) for a buy signal on that rung: WATCH 0, PILOT, ADD, FULL 1."""
-    size = float((cfg or config())["size"].get(state, 0.0))
+def label(size: float, state: str) -> str:
+    """What a buy of that size is called on that rung: WATCH (none), PILOT, ADD, FULL."""
     if state not in CYCLE or size <= 0:
-        return "WATCH", 0.0
+        return "WATCH"
     if size >= 1:
-        return "FULL", 1.0
-    return ("PILOT" if state in ("WASHOUT", "ATTEMPT") else "ADD"), size
+        return "FULL"
+    return "PILOT" if state in ("WASHOUT", "ATTEMPT") or size <= 0.25 else "ADD"
 
 
-def stage_for(board: str, lad: dict | None) -> dict | None:
+def stage(state: str, cfg: dict | None = None, vetoed: bool = False) -> tuple[str, float]:
+    """(label, size) for a buy signal on that rung: WATCH 0, PILOT, ADD, FULL 1. `vetoed` = a
+    Next Bull name with a hard veto: nothing on the low rungs, a share of the rung's size above."""
+    c = cfg or config()
+    size = float(c["size"].get(state, 0.0)) if state in CYCLE else 0.0
+    if vetoed:
+        size = size * float(c["veto"]["factor"]) if state in c["veto"]["rungs"] else 0.0
+    size = round(min(max(size, 0.0), 1.0), 4)
+    return label(size, state), size
+
+
+def veto_size(lad: dict | None, state: str, n_vetoes: int) -> float:
+    """Size of a hard-vetoed Next Bull name on that rung: 0 on the low rungs, 0 when it carries
+    more hard vetoes than the ladder waives, else a share of the rung's size."""
+    if not lad or n_vetoes > int(lad.get("veto", {}).get("max_vetoes", 0)):
+        return 0.0
+    return float(lad.get("veto_sizes", {}).get(state, 0.0))
+
+
+def stage_for(board: str, lad: dict | None, vetoed: bool = False, n_vetoes: int = 1) -> dict | None:
     """Stage fields for a buy signal of one ledger board under today's ladder summary, or None
-    when the ladder does not size that board."""
+    when the ladder does not size it (the board is not sized, or a vetoed name that stays a skip:
+    a low rung, or more hard vetoes than the ladder waives)."""
     if not lad or board not in lad.get("apply_to", []):
         return None
-    return {"stage": lad["stage"], "size": lad["size"], "ladder_state": lad["state"]}
+    if not vetoed:
+        return {"stage": lad["stage"], "size": lad["size"], "ladder_state": lad["state"]}
+    size = veto_size(lad, lad["state"], n_vetoes)
+    if size <= 0:
+        return None
+    return {"stage": label(size, lad["state"]), "size": size, "ladder_state": lad["state"], "veto_waived": True}
 
 
 def summary(f: pd.DataFrame, cfg: dict | None = None, as_of=None) -> dict:
@@ -174,6 +222,9 @@ def summary(f: pd.DataFrame, cfg: dict | None = None, as_of=None) -> dict:
         "confirmed_on": str(conf[0].date()) if len(conf) else None,
         "next": nxt, "confirm_gap_pp": confirm_gap,
         "sizes": {s: stage(s, c)[1] for s in STATES}, "stages": {s: stage(s, c)[0] for s in STATES},
+        "veto_sizes": {s: stage(s, c, vetoed=True)[1] for s in STATES},
+        "veto": {"rungs": list(c["veto"]["rungs"]), "factor": float(c["veto"]["factor"]),
+                 "max_vetoes": int(c["veto"]["max_vetoes"])},
         "thresholds": {k: c[k] for k in ("washout", "recovery", "prove_it", "confirmed", "mature")},
         "window": int(c["window"]), "carry_sessions": int(c["carry_sessions"]),
         "apply_to": list(c["apply_to"]),

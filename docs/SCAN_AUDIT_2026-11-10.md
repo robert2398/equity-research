@@ -110,6 +110,8 @@ Signals from the confirmed part of 2016 were up a median 9% after one year, but 
 stop and two-year hold carried them into the 2018 bear and the median trade ended at −22%. The lab tested a per-stock
 200-day exit (it cuts winners) but never an exit tied to the market regime.
 
+*Tested on 11 Nov (section 10): a regime exit made results worse, so this is not a fix.*
+
 ### 2.7 What is traded is not what was tested
 
 The ledger shows purchases of names currently graded X and an exit on a 50-EMA break after six
@@ -286,7 +288,7 @@ Scan-specific additions:
 | 1 | Portfolio simulator with costs and realistic fills | Medium | Tells you whether any of this makes money as a book |
 | 2 | Ladder clock with a FAILED state, tested on all three scans | Small | Addresses the largest source of losses. Built as position sizing on 10 Nov (section 9); still not tested as a portfolio |
 | 3 | Live scorecard from the ledger | Small | Starts collecting clean out-of-sample evidence now |
-| 4 | Regime exit and time stop | Small | Targets the 2016 → 2018 give-back |
+| 4 | Regime exit and time stop | Small | Tested 11 Nov and rejected: both lowered returns (section 10) |
 | 5 | One breadth definition used by the report, the history tab and the clock | Small | Removes contradictory readings |
 | 6 | Quarterly fundamentals and the leadership composite | Large | Better stock selection, the smaller half of the problem |
 | 7 | IPO lock-in calendar and later bases | Medium | Extends the best-supported scan |
@@ -393,6 +395,104 @@ By breadth on the signal day: 60-70% +89% (3 trades), 70-80% +75% (10), above 80
 - **The sizes are untested defaults.** Nothing here has been run through a portfolio simulator.
 - **Not built:** the regime exit, the leadership composite, quarterly fundamentals, the IPO
   lock-in calendar and later bases, the portfolio simulator and the live scorecard.
+
+## 10. Where more return could come from (checked 11 Nov 2026)
+
+Same lab trades, same entries. All of it is in-sample and dominated by 2020-24.
+
+### 10.1 Exits: the 50% trailing stop is hard to beat
+
+Next Bull grade A / A+, 266 trades. Variants were fixed in advance, not tuned.
+
+| Exit | Median trade | Mean trade | Return per year of capital held |
+|---|---|---|---|
+| Lab exit: 50% trail or 2 years | +39% | +88% | +54% |
+| Plus a market-regime exit (breadth reached 60% after entry, then fell under 40%) | +3% | +41% | +45% |
+| Plus a time stop (out at 126 sessions if below entry) | +14% | +72% | +54% |
+| Sell half at 2x | +60% | +68% | +42% |
+| Tighten the trail to 35% after a double | +45% | +82% | +55% |
+| Add an equal amount at +50% | +19% | +59% | +47% |
+
+- **The regime exit fails.** Breadth dips under 40% in the middle of real bull runs. It sold the
+  2016 signals in the November 2016 dip (median +26% became −15%) and the 2022 signals in the
+  February 2023 dip (+127% became −6%).
+- **The time stop** cuts deep losers (21% to 15% of trades) but also the 2022 winners that were
+  under water at six months.
+- **Selling half at 2x** gives a smoother ride and a lower total; the big winners carry the result.
+- **Tightening after a double** is the only variant that did not hurt: slightly shorter holds, and
+  better per year held for SME BUY (+89% to +111%) and IPO rule A (+248% to +296%), but worse for
+  Next Bull in 2016-19.
+- **Adding on price strength hurts.** That is different from the ladder's top-up by market rung.
+
+### 10.2 Vetoed names still paid once the market was in prove-it or confirmed
+
+Next Bull, clock good and ladder prove-it / confirmed, 2020-24 (261 trades):
+
+| Grade | Trades | Median trade | Doubled | Per year held |
+|---|---|---|---|---|
+| A+ | 50 | +97% | 78% | +94% |
+| A | 65 | +56% | 60% | +63% |
+| X (hard veto) | 146 | +47% | 58% | +55% |
+
+The grade ranks correctly, but X is 56% of the signals there and was strongly profitable. In
+2016-19 there are only 8 such X trades (median −30%), so the early half cannot confirm it.
+
+Where the biggest winners sat, same window:
+
+| Grade | Reached 5x | Reached 10x |
+|---|---|---|
+| A+ | 11 of 50 | 1 |
+| A | 7 of 65 | 1 |
+| X | 16 of 146 | 5 |
+
+- X names with one hard veto: 124 trades, 60% doubled, 13% reached 5x. With two or more: 21
+  trades, 43% doubled, none reached 5x.
+- On the low rungs the veto still earns its place: grade X made a median −44% in 2016-19 (48
+  trades) and +33% in 2020-24 (40), the weakest grade both times.
+
+**Built on 11 Nov:** a grade X name with one hard veto is taken at half the rung's size in prove
+it / confirmed and queues at P5 (`ladder.veto`). It stays a skip on the low rungs.
+
+### 10.3 What separated trades inside that window (2020-24)
+
+| Trait | Trades | Median with / without | Per year held with / without |
+|---|---|---|---|
+| Price to sales ≤ 1 | 85 | +81% / +47% | +83% / +55% |
+| Shareholder count up > 50% in a year | 28 | +148% / +48% | +102% / +60% |
+| Market cap ₹1,000-5,000 cr | 130 | +69% / +43% | +73% / +55% |
+| Tight 10-day range ≤ 12% | 73 | +75% / +49% | +73% / +61% |
+| Sales growth ≥ 20% | 92 | +69% / +49% | +77% / +57% |
+| Institutions < 2% (a hard veto today) | 80 | +36% / +70% | +52% / +70% |
+| Market cap ≤ ₹1,000 cr (the S tag) | 57 | +23% / +68% | +55% / +67% |
+| RS ≥ 95 (the A tier tag) | 44 | +21% / +62% | +57% / +66% |
+
+Only the ₹1,000-5,000 cr band and price to sales ≤ 1 also pointed the right way in 2016-19 (17 and
+18 trades). Shareholding data barely exists before 2018.
+
+### 10.4 Each scan by ladder rung
+
+| Rung | Bear reversal V2: median, winners | Next Bull raw signal: median, winners |
+|---|---|---|
+| Washout | +17%, 62% (47 trades) | −7%, 45% (73) |
+| Attempt | +27%, 62% (78) | −8%, 50% (123) |
+| Prove it | +57%, 84% (57) | +41%, 65% (173) |
+| Confirmed | +28%, 80% (25) | +33%, 63% (278) |
+
+In the washout and attempt rungs the bear-reversal scan held up in the bad years: 2018 +2%
+against −35% for Next Bull, and 2019 +28% against −46%. IPO rule A was positive on every rung.
+
+### 10.5 The number of names matters
+
+The best tenth of grade A / A+ trades made 48% of all gains (mean +88%, median +39%). Drawing
+random baskets from one signal year:
+
+| Signal year | 5 names: unlucky tenth | 20 names: unlucky tenth | Pool average |
+|---|---|---|---|
+| 2016 | −5% | +26% | +51% |
+| 2020 | +16% | +59% | +95% |
+| 2023 | +29% | +61% | +86% |
+
+More names does not raise the average; it makes the average far more likely to be what you get.
 
 ## Sources
 

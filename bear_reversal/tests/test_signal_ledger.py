@@ -64,6 +64,39 @@ def test_queue_only_fresh_p1_to_p5_and_keeps_other_records(ledger):
     assert by["OLD"]["first_signal_age_sessions"] == 5 and not by["OLD"]["new_this_week"]
 
 
+@pytest.mark.parametrize("status", ["WAIT", "RESEARCHING"])
+@pytest.mark.parametrize("board,market,prefix", [
+    ("main", "MARKET", ""), ("sme", "SME_MARKET", "SME."),
+    ("ipo", "IPO_MARKET", "IPO."), ("bear", "BEAR_MARKET", "BEAR."),
+])
+def test_pending_decisions_stay_queued_until_resolved(ledger, status, board, market, prefix):
+    episode, write, dates = ledger
+    write([])
+    ep = episode(f"{prefix}PENDING", first=dates[0], board=board, grade="X",
+                 live=False, on_list_today=False, queue_current=False)
+    getattr(sl, market).write_text(json.dumps({"as_of": dates[-1], "dates": dates, "episodes": [ep]}))
+    # A new signal is excluded by age, expiry, source eligibility and (main-board) grade.
+    assert not sl.view()["rows"][0]["in_queue"]
+
+    for pending in (status, "RESEARCHING" if status == "WAIT" else "WAIT"):
+        row = sl.set_entry(ep["id"], {"status": pending, "comment": "Keep reviewing"})["rows"][0]
+        assert row["first_signal_age_sessions"] == 5
+        assert row["shown_status"] == pending and row["in_queue"] and row["queue_rank"] == 1
+        # Reloaded decisions retain their status and queue membership.
+        reloaded = sl.view()
+        assert reloaded["counts"]["queue"] == 1
+        assert reloaded["counts"]["queue_by_source"][board] == 1
+        assert reloaded["rows"][0]["shown_status"] == pending
+
+    for terminal in ("PASSED", "BOUGHT", "EXITED"):
+        if terminal != "EXITED":
+            sl.set_entry(ep["id"], {"status": status})
+        result = sl.set_entry(ep["id"], {"status": terminal})
+        assert result["counts"]["queue"] == 0
+        assert result["rows"][0]["shown_status"] == terminal
+        assert not result["rows"][0]["in_queue"]
+
+
 def test_queue_uses_shared_sessions_for_sparse_and_stale_ipo_data(ledger):
     episode, write, dates = ledger
     write([])
